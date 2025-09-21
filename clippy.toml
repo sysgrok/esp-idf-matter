@@ -1,4 +1,4 @@
 future-size-threshold = 4600
-stack-size-threshold = 4600
+stack-size-threshold = 5100
 pass-by-value-size-limit = 16
 large-error-threshold = 64

@@ -9,6 +9,7 @@ use esp_idf_svc::thread::EspThread;
 
 use log::info;
 
+use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
 use rs_matter_stack::matter::dm::networks::wireless::Thread;
 use rs_matter_stack::matter::error::Error;
 
@@ -17,15 +18,15 @@ use rs_matter_stack::wireless::{Gatt, GattTask, ThreadCoex, ThreadCoexTask, Thre
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
 use crate::error::to_net_error;
-use crate::netif::EspMatterNetStack;
-use crate::thread::{EspMatterThreadCtl, EspMatterThreadNotif, EspMatterThreadSrp};
+use crate::netif::{EspMatterNetStack, EspMatterNetif};
+use crate::thread::{EspMatterThreadCtl, EspMatterThreadSrp};
 
 use super::{EspWirelessMatterStack, GATTS_APP_ID};
 
 extern crate alloc;
 
 /// A type alias for an ESP-IDF Matter stack running over Thread (and BLE, during commissioning).
-pub type EspThreadMatterStack<'a, E> = EspWirelessMatterStack<'a, Thread, E>;
+pub type EspThreadMatterStack<'a, const B: usize, E> = EspWirelessMatterStack<'a, B, Thread, E>;
 
 /// A `Thread` trait implementation via ESP-IDF's Thread/BT modem
 pub struct EspMatterThread<'a, 'd> {
@@ -38,12 +39,12 @@ pub struct EspMatterThread<'a, 'd> {
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
     /// Create a new instance of the `EspMatterThread` type.
-    pub fn new<E>(
+    pub fn new<const B: usize, E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         mounted_event_fs: Arc<MountedEventfs>,
-        stack: &'a EspThreadMatterStack<E>,
+        stack: &'a EspThreadMatterStack<B, E>,
     ) -> Self
     where
         E: Embedding + 'static,
@@ -116,7 +117,7 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
 
         task.run(
             EspMatterNetStack::new(),
-            EspMatterThreadNotif::new(&net_ctl),
+            EspMatterNetif::new(&net_ctl, InterfaceTypeEnum::Thread, self.sysloop.clone()),
             &net_ctl,
             &mut mdns,
         )
@@ -163,7 +164,7 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
 
         task.run(
             EspMatterNetStack::new(),
-            EspMatterThreadNotif::new(&net_ctl),
+            EspMatterNetif::new(&net_ctl, InterfaceTypeEnum::Thread, self.sysloop.clone()),
             &net_ctl,
             &mut mdns,
             &mut peripheral,

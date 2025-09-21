@@ -1,14 +1,15 @@
 //! This module provides the ESP-IDF Wifi implementation of the Matter `NetCtl`, `NetChangeNotif`, `WirelessDiag`, and `WifiDiag` traits.
 
-use core::cell::RefCell;
+use core::cell::Cell;
 use core::time::Duration;
 
 extern crate alloc;
 
-use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
+use embassy_sync::blocking_mutex;
 use embassy_sync::mutex::Mutex;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::handle::RawHandle as _;
 use esp_idf_svc::netif::EspNetif;
 use esp_idf_svc::sys::{esp, EspError};
@@ -16,8 +17,8 @@ use esp_idf_svc::wifi::{
     AsyncWifi, AuthMethod, ClientConfiguration, Configuration::Client, EspWifi,
 };
 
+use log::{info, warn};
 use rs_matter_stack::matter::dm::clusters::decl::general_diagnostics::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::clusters::gen_diag::{NetifDiag, NetifInfo};
 use rs_matter_stack::matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
@@ -28,20 +29,14 @@ use rs_matter_stack::matter::dm::clusters::wifi_diag::{
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::{Error, ErrorCode};
 use rs_matter_stack::matter::tlv::Nullable;
-use rs_matter_stack::matter::utils::sync::Notification;
 
 use crate::error::to_net_error;
-use crate::netif::{EspMatterNetif, NetifInfoOwned};
+use crate::netif::{self, EspNetifAccess};
 
 /// This type provides the ESP-IDF Wifi implementation of the Matter `NetCtl`, `NetChangeNotif`, `WirelessDiag`, and `WifiDiag` traits
-// TODO: Revert to `EspRawMutex` when `esp-idf-svc` is updated to `embassy-sync 0.7`
 pub struct EspMatterWifiCtl<'a> {
-    wifi: Mutex<CriticalSectionRawMutex /*EspRawMutex*/, AsyncWifi<EspWifi<'a>>>,
-    netif_state: blocking_mutex::Mutex<
-        CriticalSectionRawMutex, /*EspRawMutex*/
-        RefCell<NetifInfoOwned>,
-    >,
-    netif_state_changed: Notification<CriticalSectionRawMutex /*EspRawMutex*/>,
+    wifi: Mutex<EspRawMutex, AsyncWifi<EspWifi<'a>>>,
+    operational: blocking_mutex::Mutex<EspRawMutex, Cell<bool>>,
     sysloop: EspSystemEventLoop,
 }
 
@@ -50,23 +45,18 @@ impl<'a> EspMatterWifiCtl<'a> {
     pub const fn new(wifi: AsyncWifi<EspWifi<'a>>, sysloop: EspSystemEventLoop) -> Self {
         Self {
             wifi: Mutex::new(wifi),
-            netif_state: blocking_mutex::Mutex::new(RefCell::new(NetifInfoOwned::new())),
-            netif_state_changed: Notification::new(),
+            operational: blocking_mutex::Mutex::new(Cell::new(false)),
             sysloop,
         }
     }
 
-    fn load(&self, wifi: &EspWifi<'_>) -> Result<(), EspError> {
-        self.netif_state.lock(|state| {
-            if state.borrow_mut().load(
-                wifi.is_connected()?,
-                wifi.sta_netif(),
-                InterfaceTypeEnum::WiFi,
-            )? {
-                self.netif_state_changed.notify();
-            }
+    /// Fetch whether the Wifi interface is operational (i.e. connected and has IPv6 and Ipv4 addresses).
+    fn fetch_is_operational(wifi: &EspWifi<'_>) -> Result<bool, EspError> {
+        let netif = wifi.sta_netif();
+        let l2_connected = wifi.is_connected().unwrap_or(false);
 
-            Ok(())
+        netif::utils::get_netif_conf(netif, InterfaceTypeEnum::WiFi, |info| {
+            Ok(netif::utils::info_is_operational(l2_connected, info))
         })
     }
 }
@@ -131,8 +121,6 @@ impl NetCtl for EspMatterWifiCtl<'_> {
 
         let mut wifi = self.wifi.lock().await;
 
-        self.load(wifi.wifi()).map_err(to_net_error)?;
-
         let mut result = Ok(());
 
         let mut conf = Client(ClientConfiguration {
@@ -154,9 +142,7 @@ impl NetCtl for EspMatterWifiCtl<'_> {
             AuthMethod::WPA2WPA3Personal,
             AuthMethod::WEP,
         ] {
-            if wifi.is_started().map_err(to_net_error)? {
-                wifi.stop().await.map_err(to_net_error)?;
-            }
+            let _ = wifi.disconnect().await;
 
             conf.as_client_conf_mut().auth_method = auth_method;
             wifi.set_configuration(&conf).map_err(to_net_error)?;
@@ -185,48 +171,73 @@ impl NetCtl for EspMatterWifiCtl<'_> {
 
         // Wait not just for the wireless interface to come up, but also for the
         // IP addresses to be assigned.
-        wifi.ip_wait_while(
-            |wifi| {
-                self.netif_state.lock(|state| {
-                    let mut state = state.borrow_mut();
+        let result = wifi
+            .ip_wait_while(
+                |wifi| Self::fetch_is_operational(wifi.wifi()).map(|op| !op),
+                Some(Duration::from_secs(20)),
+            )
+            .await
+            .map_err(|_| NetCtlError::IpBindFailed);
 
-                    let changed = state.load(
-                        wifi.wifi().is_connected()?,
-                        wifi.wifi().sta_netif(),
-                        InterfaceTypeEnum::WiFi,
-                    )?;
+        match result {
+            Ok(()) => {
+                self.operational.lock(|operational| {
+                    info!(
+                        "Wifi operational state updated: {} -> {}",
+                        operational.get(),
+                        true
+                    );
 
-                    if changed {
-                        self.netif_state_changed.notify();
-                    }
+                    operational.set(true)
+                });
 
-                    Ok(!state.is_operational())
-                })
-            },
-            Some(Duration::from_secs(15)),
-        )
-        .await
-        .map_err(|_| NetCtlError::IpBindFailed)?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = wifi.disconnect().await;
 
-        Ok(())
+                Err(e)
+            }
+        }
     }
 }
 
 impl NetChangeNotif for EspMatterWifiCtl<'_> {
     async fn wait_changed(&self) {
-        let _ = self.load(self.wifi.lock().await.wifi());
+        let fetch_operational = || async {
+            let wifi = self.wifi.lock().await;
+            let new_operational = Self::fetch_is_operational(wifi.wifi()).unwrap_or(false);
 
-        let _ = EspMatterNetif::<EspNetif>::wait_any_conf_change(&self.sysloop).await;
+            self.operational.lock(|operational| {
+                if operational.get() != new_operational {
+                    warn!(
+                        "Wifi operational state changed: {} -> {}",
+                        operational.get(),
+                        new_operational
+                    );
 
-        let _ = self.load(self.wifi.lock().await.wifi());
+                    operational.set(new_operational);
+
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+
+        loop {
+            if fetch_operational().await {
+                break;
+            }
+
+            let _ = netif::utils::wait_any_conf_change(&self.sysloop).await;
+        }
     }
 }
 
 impl WirelessDiag for EspMatterWifiCtl<'_> {
     fn connected(&self) -> Result<bool, Error> {
-        Ok(self
-            .netif_state
-            .lock(|state| state.borrow().is_operational()))
+        Ok(self.operational.lock(|operational| operational.get()))
     }
 }
 
@@ -253,25 +264,17 @@ impl WifiDiag for EspMatterWifiCtl<'_> {
     }
 }
 
-/// This type provides the ESP-IDF Wifi implementation of the Matter `NetifDiag` and `NetChangeNotif`
-pub struct EspMatterWifiNotif<'a, 'd>(&'a EspMatterWifiCtl<'d>);
+impl EspNetifAccess for EspMatterWifiCtl<'_> {
+    async fn access<F, R>(&self, f: F) -> Result<R, EspError>
+    where
+        F: FnOnce(&EspNetif, bool) -> Result<R, EspError>,
+    {
+        let wifi = self.wifi.lock().await;
 
-impl<'a, 'd> EspMatterWifiNotif<'a, 'd> {
-    /// Create a new instance of the `EspMatterWifiNotif` type.
-    pub const fn new(wifi: &'a EspMatterWifiCtl<'d>) -> Self {
-        Self(wifi)
-    }
-}
-
-impl NetifDiag for EspMatterWifiNotif<'_, '_> {
-    fn netifs(&self, f: &mut dyn FnMut(&NetifInfo) -> Result<(), Error>) -> Result<(), Error> {
-        self.0.netif_state.lock(|info| info.borrow().as_ref(f))
-    }
-}
-
-impl NetChangeNotif for EspMatterWifiNotif<'_, '_> {
-    async fn wait_changed(&self) {
-        self.0.netif_state_changed.wait().await;
+        f(
+            wifi.wifi().sta_netif(),
+            wifi.is_connected().unwrap_or(false),
+        )
     }
 }
 

@@ -1,6 +1,6 @@
 //! This module provides the ESP-IDF Thread implementation of the Matter `NetCtl`, `NetChangeNotif`, `WirelessDiag`, and `ThreadDiag` traits.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::fmt::Write;
 
 use alloc::sync::Arc;
@@ -9,16 +9,16 @@ use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::netif::EspNetif;
 use esp_idf_svc::sys::{esp, esp_mac_type_t_ESP_MAC_IEEE802154, esp_read_mac, EspError};
 use esp_idf_svc::thread::{
     ActiveScanResult, EspThread, NetifMode, Role, SrpConf, SrpService, SrpServiceSlot,
 };
 
-use log::{error, info};
+use log::{error, info, warn};
 
-use rs_matter_stack::matter::dm::clusters::decl::general_diagnostics::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::clusters::gen_diag::{NetifDiag, NetifInfo};
+use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
 use rs_matter_stack::matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
@@ -31,27 +31,21 @@ use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::{Error, ErrorCode};
 use rs_matter_stack::matter::transport::network::mdns::Service;
 use rs_matter_stack::matter::utils::storage::Vec;
-use rs_matter_stack::matter::utils::sync::Notification;
 use rs_matter_stack::matter::{Matter, MatterMdnsService};
 use rs_matter_stack::mdns::Mdns;
 
 use crate::error::to_net_error;
-use crate::netif::{EspMatterNetif, NetifInfoOwned};
+use crate::netif::{self, EspNetifAccess};
 
 extern crate alloc;
 
 /// This type provides the ESP-IDF Thread implementation of the Matter `NetCtl`, `NetChangeNotif`, `WirelessDiag`, and `ThreadDiag` traits
-// TODO: Revert to `EspRawMutex` when `esp-idf-svc` is updated to `embassy-sync 0.7`
 pub struct EspMatterThreadCtl<'a, 'd, M>
 where
     M: NetifMode,
 {
-    thread: Mutex<CriticalSectionRawMutex /*EspRawMutex*/, &'a EspThread<'d, M>>,
-    netif_state: blocking_mutex::Mutex<
-        CriticalSectionRawMutex, /*EspRawMutex*/
-        RefCell<NetifInfoOwned>,
-    >,
-    netif_state_changed: Notification<CriticalSectionRawMutex /*EspRawMutex*/>,
+    thread: Mutex<EspRawMutex, &'a EspThread<'d, M>>,
+    operational: blocking_mutex::Mutex<EspRawMutex, Cell<bool>>,
     sysloop: EspSystemEventLoop,
 }
 
@@ -63,27 +57,25 @@ where
     pub const fn new(thread: &'a EspThread<'d, M>, sysloop: EspSystemEventLoop) -> Self {
         Self {
             thread: Mutex::new(thread),
-            netif_state: blocking_mutex::Mutex::new(RefCell::new(NetifInfoOwned::new())),
-            netif_state_changed: Notification::new(),
+            operational: blocking_mutex::Mutex::new(Cell::new(false)),
             sysloop,
         }
     }
 
-    fn load<MM: NetifMode>(&self, thread: &EspThread<'_, MM>) -> Result<(), EspError> {
-        self.netif_state.lock(|state| {
-            if state.borrow_mut().load(
-                Self::is_thread_connected(thread)?,
-                thread.netif(),
-                InterfaceTypeEnum::Thread,
-            )? {
-                self.netif_state_changed.notify();
-            }
+    /// Fetch from the underlying Thread interface whether it is operational (i.e. connected and has IPv6 addresses).
+    fn fetch_is_operational<MM: NetifMode>(thread: &EspThread<MM>) -> Result<bool, EspError> {
+        let netif = thread.netif();
+        let l2_connected = Self::fetch_is_thread_connected(thread).unwrap_or(false);
 
-            Ok(())
+        netif::utils::get_netif_conf(netif, InterfaceTypeEnum::Thread, |info| {
+            Ok(netif::utils::info_is_operational_v6(l2_connected, info))
         })
     }
 
-    fn is_thread_connected<MM: NetifMode>(thread: &EspThread<'_, MM>) -> Result<bool, EspError> {
+    /// Fetch from the underlying Thread interface whether it is connected at L2 (i.e. not detached or disabled).
+    fn fetch_is_thread_connected<MM: NetifMode>(
+        thread: &EspThread<'_, MM>,
+    ) -> Result<bool, EspError> {
         Ok(!matches!(thread.role()?, Role::Detached | Role::Disabled))
     }
 }
@@ -215,44 +207,41 @@ where
 
         let thread = self.thread.lock().await;
 
-        self.load(&thread).map_err(to_net_error)?;
-
         thread.set_tod(dataset_tlv).map_err(to_net_constr_error)?;
 
         let connect_attempt_time = embassy_time::Instant::now();
 
-        loop {
-            let operational = self
-                .netif_state
-                .lock(|state| {
-                    let mut state = state.borrow_mut();
-
-                    let changed = state.load(
-                        Self::is_thread_connected(*thread)?,
-                        thread.netif(),
-                        InterfaceTypeEnum::Thread,
-                    )?;
-
-                    if changed {
-                        self.netif_state_changed.notify();
-                    }
-
-                    Result::<_, EspError>::Ok(state.is_operational_v6())
-                })
-                .map_err(to_net_error)?;
+        let result = loop {
+            let operational = Self::fetch_is_operational(&thread).map_err(to_net_error)?;
 
             if operational {
-                break;
+                break Ok(());
             }
 
             if connect_attempt_time.elapsed() > CONNECT_WAIT {
-                return Err(NetCtlError::AuthFailure);
+                break Err(NetCtlError::AuthFailure);
             }
 
             embassy_time::Timer::after(POLL_CONNECT_WAIT).await;
-        }
+        };
 
-        Ok(())
+        match result {
+            Ok(()) => {
+                // TODO: Disconnect Thread?
+                self.operational.lock(|operational| {
+                    info!(
+                        "Thread operational state updated: {} -> {}",
+                        operational.get(),
+                        true
+                    );
+
+                    operational.set(true)
+                });
+
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -261,11 +250,34 @@ where
     M: NetifMode,
 {
     async fn wait_changed(&self) {
-        let _ = self.load(*self.thread.lock().await);
+        let fetch_operational = || async {
+            let thread = self.thread.lock().await;
 
-        let _ = EspMatterNetif::<EspNetif>::wait_any_conf_change(&self.sysloop).await;
+            let new_operational = Self::fetch_is_operational(&thread).unwrap_or(false);
+            self.operational.lock(|operational| {
+                if operational.get() != new_operational {
+                    warn!(
+                        "Thread operational state changed: {} -> {}",
+                        operational.get(),
+                        new_operational
+                    );
 
-        let _ = self.load(*self.thread.lock().await);
+                    operational.set(new_operational);
+
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+
+        loop {
+            if fetch_operational().await {
+                break;
+            }
+
+            let _ = netif::utils::wait_any_conf_change(&self.sysloop).await;
+        }
     }
 }
 
@@ -274,9 +286,7 @@ where
     M: NetifMode,
 {
     fn connected(&self) -> Result<bool, Error> {
-        Ok(self
-            .netif_state
-            .lock(|state| state.borrow().is_operational_v6()))
+        Ok(self.operational.lock(|operational| operational.get()))
     }
 }
 
@@ -375,36 +385,17 @@ where
     }
 }
 
-/// This type provides the ESP-IDF Thread implementation of the Matter `NetifDiag` and `NetChangeNotif`
-pub struct EspMatterThreadNotif<'a, 'd, M>(&'a EspMatterThreadCtl<'a, 'd, M>)
-where
-    M: NetifMode;
+impl<T: NetifMode> EspNetifAccess for EspMatterThreadCtl<'_, '_, T> {
+    async fn access<F, R>(&self, f: F) -> Result<R, EspError>
+    where
+        F: FnOnce(&EspNetif, bool) -> Result<R, EspError>,
+    {
+        let thread = self.thread.lock().await;
 
-impl<'a, 'd, M> EspMatterThreadNotif<'a, 'd, M>
-where
-    M: NetifMode,
-{
-    /// Create a new instance of the `EspMatterThreadNotif` type.
-    pub const fn new(thread: &'a EspMatterThreadCtl<'a, 'd, M>) -> Self {
-        Self(thread)
-    }
-}
-
-impl<M> NetifDiag for EspMatterThreadNotif<'_, '_, M>
-where
-    M: NetifMode,
-{
-    fn netifs(&self, f: &mut dyn FnMut(&NetifInfo) -> Result<(), Error>) -> Result<(), Error> {
-        self.0.netif_state.lock(|info| info.borrow().as_ref(f))
-    }
-}
-
-impl<M> NetChangeNotif for EspMatterThreadNotif<'_, '_, M>
-where
-    M: NetifMode,
-{
-    async fn wait_changed(&self) {
-        self.0.netif_state_changed.wait().await;
+        f(
+            thread.netif(),
+            Self::fetch_is_thread_connected(&thread).unwrap_or(false),
+        )
     }
 }
 
@@ -454,13 +445,37 @@ where
         )
         .unwrap();
 
-        self.thread
-            .srp_set_conf(&SrpConf {
-                host_name: &hostname,
-                host_addrs: &[],
-                ..Default::default()
+        let register_host = self
+            .thread
+            .srp_conf(|conf, _, free| {
+                let register = if free {
+                    info!("No hostname registered, setting SRP hostname to '{hostname}'");
+
+                    true
+                } else if conf.host_name != hostname.as_str() {
+                    info!(
+                        "Different hostname registered ('{}'), updating to '{hostname}'",
+                        conf.host_name
+                    );
+
+                    true
+                } else {
+                    false
+                };
+
+                Ok(register)
             })
             .map_err(to_net_error)?;
+
+        if register_host {
+            self.thread
+                .srp_set_conf(&SrpConf {
+                    host_name: &hostname,
+                    host_addrs: &[],
+                    ..Default::default()
+                })
+                .map_err(to_net_error)?;
+        }
 
         loop {
             matter.wait_mdns().await;

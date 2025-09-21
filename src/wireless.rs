@@ -32,7 +32,8 @@ mod thread;
 mod wifi;
 
 /// A type alias for an ESP-IDF Matter stack running over a wireless network (Wifi or Thread) and BLE.
-pub type EspWirelessMatterStack<'a, T, E> = MatterStack<'a, EspWirelessBle<T, E>>;
+pub type EspWirelessMatterStack<'a, const B: usize, T, E> =
+    MatterStack<'a, B, EspWirelessBle<T, E>>;
 
 /// A type alias for an ESP-IDF implementation of the `Network` trait for a Matter stack running over
 /// BLE during commissioning, and then over either WiFi or Thread when operating.

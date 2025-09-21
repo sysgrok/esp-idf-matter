@@ -161,13 +161,7 @@ examples = [
     "default", 
     "esp-idf-svc/binstart", 
     "esp-idf-svc/critical-section",
-    "max-sessions-5",
-    "max-exchanges-per-session-3",
     "max-fabrics-2",
-    "max-acls-per-fabric-3",
-    "max-im-buffers-6",
-    "max-subscriptions-2",
-    "max-responders-2"
 ]
 
 [dependencies]

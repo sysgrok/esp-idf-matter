@@ -56,14 +56,15 @@ mod example {
 
     extern crate alloc;
 
+    const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
+    const BUMP_SIZE: usize = 13500;
+
     const THREAD_DATASET: &str = env!("THREAD_DATASET");
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
 
         info!("Starting...");
-
-        const STACK_SIZE: usize = 85 * 1024;
 
         ThreadSpawnConfiguration::set(&ThreadSpawnConfiguration {
             name: Some(c"matter"),
@@ -174,7 +175,7 @@ mod example {
             EspMatterNetStack::new(),
             // The Matter stack need access to the netif on which we'll operate
             // Since we are pretending to use a wired Ethernet connection - yet -
-            // we are using Thread, provide the Thread netif here
+            // we are using Thread - provide the Thread netif here
             EspMatterNetif::new(thread.netif(), InterfaceTypeEnum::Thread, sysloop),
             // The Matter stack needs an mDNS service to advertise itself
             EspMatterThreadSrp::new(&thread),
@@ -215,7 +216,7 @@ mod example {
 
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
-    static MATTER_STACK: StaticCell<EspEthMatterStack<()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<EspEthMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
 
     /// Endpoint 0 (the root endpoint) always runs
     /// the hidden Matter system clusters, so we pick ID=1
@@ -225,7 +226,7 @@ mod example {
     const NODE: Node = Node {
         id: 0,
         endpoints: &[
-            EspEthMatterStack::<()>::root_endpoint(),
+            EspEthMatterStack::<0, ()>::root_endpoint(),
             Endpoint {
                 id: LIGHT_ENDPOINT_ID,
                 device_types: devices!(DEV_TYPE_ON_OFF_LIGHT),

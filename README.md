@@ -24,7 +24,9 @@ Since ESP-IDF does support the Rust Standard Library, UDP networking just works.
 //! and thus BLE for commissioning.
 //!
 //! If you want to use Ethernet, utilize `EspEthMatterStack` instead.
-//! If you want to use concurrent commissioning, call `run_coex` instead of just `run`.
+//! If you want to use non-concurrent commissioning, call `run` instead of `run_coex`
+//! and provision a higher `BUMP_SIZE` because the non-concurrent commissioning currently has a much-higher
+//! memory requirements on the futures' sizes (but lower memory requirements inside ESP-IDF).
 //! (Note: Alexa does not work (yet) with non-concurrent commissioning.)
 //!
 //! The example implements a fictitious Light device (an On-Off Matter cluster).
@@ -76,12 +78,13 @@ mod example {
 
     extern crate alloc;
 
+    const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
+    const BUMP_SIZE: usize = 13500;
+
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
 
         info!("Starting...");
-
-        const STACK_SIZE: usize = 110 * 1024;
 
         ThreadSpawnConfiguration::set(&ThreadSpawnConfiguration {
             name: Some(c"matter"),
@@ -164,7 +167,7 @@ mod example {
         // the `EspKvBlobStore` to persist the Matter state in NVS.
         // let store = stack.create_shared_store(esp_idf_matter::persist::EspKvBlobStore::new_default(nvs.clone())?);
         let store = stack.create_shared_store(rs_matter_stack::persist::DummyKvBlobStore);
-        let mut matter = pin!(stack.run(
+        let mut matter = pin!(stack.run_coex(
             // The Matter stack needs the Wifi/BLE modem peripheral
             EspMatterWifi::new_with_builtin_mdns(peripherals.modem, sysloop, timers, nvs, stack),
             // The Matter stack needs a persister to store its state
@@ -205,7 +208,7 @@ mod example {
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
     /// It is also a mandatory requirement when the `WifiBle` stack variation is used.
-    static MATTER_STACK: StaticCell<EspWifiMatterStack<()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<EspWifiMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
 
     /// Endpoint 0 (the root endpoint) always runs
     /// the hidden Matter system clusters, so we pick ID=1
@@ -215,7 +218,7 @@ mod example {
     const NODE: Node = Node {
         id: 0,
         endpoints: &[
-            EspWifiMatterStack::<()>::root_endpoint(),
+            EspWifiMatterStack::<0, ()>::root_endpoint(),
             Endpoint {
                 id: LIGHT_ENDPOINT_ID,
                 device_types: devices!(DEV_TYPE_ON_OFF_LIGHT),

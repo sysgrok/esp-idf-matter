@@ -1,6 +1,7 @@
 # Increase a bit these stack sizes as they are too low by default
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
-# For async-io
+
+# For async-io (async-io-mini which is used by default does not need that)
 #CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 
 # Go figure...
@@ -22,5 +23,11 @@ CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=y
 # Generic Thread functionality
 CONFIG_OPENTHREAD_ENABLED=y
 
+# Wifi/Thread + BLE coex
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
 # So that the QR code does not get distorted by misaligned log lines
 CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
+
+# Colored terminal not enabled by default since ESP-IDF V5.5
+CONFIG_LOG_COLORS=y

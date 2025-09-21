@@ -16,7 +16,7 @@ use esp_idf_svc::bt::ble::gatt::{
 use esp_idf_svc::bt::{BdAddr, BleEnabled, BtDriver, BtStatus, BtUuid};
 use esp_idf_svc::sys::{EspError, ESP_ERR_INVALID_STATE, ESP_FAIL};
 
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 
 use rs_matter_stack::matter::error::ErrorCode;
 use rs_matter_stack::matter::transport::network::btp::{
@@ -270,7 +270,10 @@ where
             });
 
             // TODO: Is this asynchronous?
-            ctx.indicate(&ind.data, ind.addr)?;
+            let result = ctx.indicate(&ind.data, ind.addr);
+            if let Err(e) = result {
+                error!("GATT indicate failed: {e}");
+            }
 
             ind.data.clear();
         }
