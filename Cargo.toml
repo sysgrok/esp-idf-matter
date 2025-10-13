@@ -16,16 +16,12 @@ rust-version = "1.84"
 #[lib]
 #harness = false
 
-#[patch.'https://github.com/sysgrok/async-io-mini']
-#async-io-mini = { path = "../async-io-mini" }
-[patch.'https://github.com/sysgrok/rs-matter-stack']
-rs-matter-stack = { git = "https://github.com/ivmarkov/rs-matter-stack", branch = "next" }
-#rs-matter-stack = { path = "../rs-matter-stack" }
-
 [patch.crates-io]
 #rs-matter = { git = "https://github.com/project-chip/rs-matter" }
 rs-matter = { git = "https://github.com/sysgrok/rs-matter", branch = "next" }
 #rs-matter = { path = "../rs-matter/rs-matter" }
+rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "next" }
+#rs-matter-stack = { path = "../rs-matter-stack" }
 #edge-nal = { git = "https://github.com/sysgrok/edge-net" }
 #edge-nal-std = { git = "https://github.com/sysgrok/edge-net" }
 #edge-mdns = { git = "https://github.com/sysgrok/edge-net" }
@@ -173,7 +169,7 @@ embassy-sync = "0.7"
 embassy-time = "0.4"
 esp-idf-svc = { version = "0.51", default-features = false, features = ["alloc", "embassy-time-driver", "experimental"] }
 embedded-svc = { version = "0.28", default-features = false }
-rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", default-features = false, features = ["rustcrypto"] }
+rs-matter-stack = { version = "0.1", default-features = false, features = ["rustcrypto"] }
 async-io = { version = "=2.0.0", default-features = false } # Workaround for https://github.com/smol-rs/async-lock/issues/84
 edge-nal = "0.5"
 edge-nal-std = { version = "0.5", default-features = false, optional = true }
