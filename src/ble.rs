@@ -1,10 +1,13 @@
 //! This module provides the ESP-IDF implementation of the GATT peripheral for the BTP protocol in `rs-matter`.
 
 use core::borrow::Borrow;
+use core::fmt::Debug;
 
 use alloc::borrow::ToOwned;
 
+use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use enumset::enum_set;
 
 use esp_idf_svc::bt::ble::gap::{BleGapEvent, EspBleGap};
@@ -14,22 +17,23 @@ use esp_idf_svc::bt::ble::gatt::{
     GattServiceId, GattStatus, Handle, Permission, Property,
 };
 use esp_idf_svc::bt::{BdAddr, BleEnabled, BtDriver, BtStatus, BtUuid};
-use esp_idf_svc::sys::{EspError, ESP_ERR_INVALID_STATE, ESP_FAIL};
+use esp_idf_svc::sys::{EspError, ESP_FAIL};
 
 use log::{error, info, trace, warn};
 
-use rs_matter_stack::matter::error::ErrorCode;
+use rs_matter_stack::ble::GattPeripheral;
+use rs_matter_stack::matter::error::{Error, ErrorCode};
 use rs_matter_stack::matter::transport::network::btp::{
-    AdvData, GattPeripheral, GattPeripheralEvent, C1_CHARACTERISTIC_UUID, C1_MAX_LEN,
-    C2_CHARACTERISTIC_UUID, C2_MAX_LEN, MATTER_BLE_SERVICE_UUID16, MAX_BTP_SESSIONS,
+    AdvData, Btp, C1_CHARACTERISTIC_UUID, C1_MAX_LEN, C2_CHARACTERISTIC_UUID, C2_MAX_LEN,
+    MATTER_BLE_SERVICE_UUID16,
 };
 use rs_matter_stack::matter::transport::network::BtAddr;
 use rs_matter_stack::matter::utils::cell::RefCell;
 use rs_matter_stack::matter::utils::init::{init, Init};
+use rs_matter_stack::matter::utils::select::Coalesce;
+use rs_matter_stack::matter::utils::storage::Vec;
 use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-use rs_matter_stack::matter::utils::sync::{IfMutex, Signal};
 
-const MAX_CONNECTIONS: usize = MAX_BTP_SESSIONS;
 const MAX_MTU_SIZE: usize = 512;
 
 #[derive(Debug, Clone)]
@@ -46,7 +50,10 @@ struct State {
     c1_handle: Option<Handle>,
     c2_handle: Option<Handle>,
     c2_cccd_handle: Option<Handle>,
-    connections: rs_matter_stack::matter::utils::storage::Vec<Connection, MAX_CONNECTIONS>,
+    connection: Option<Connection>,
+    conn_gen: usize,
+    in_data: Vec<u8, MAX_MTU_SIZE>,
+    out_data: Vec<u8, MAX_MTU_SIZE>, // TODO: Remove this once we can get access to the inner array inside `GattResponse`
     response: GattResponse,
 }
 
@@ -59,7 +66,10 @@ impl State {
             c1_handle: None,
             c2_handle: None,
             c2_cccd_handle: None,
-            connections: rs_matter_stack::matter::utils::storage::Vec::new(),
+            connection: None,
+            conn_gen: 0,
+            in_data: Vec::new(),
+            out_data: Vec::new(),
             response: GattResponse::new(),
         }
     }
@@ -71,31 +81,11 @@ impl State {
             c1_handle: None,
             c2_handle: None,
             c2_cccd_handle: None,
-            connections <- rs_matter_stack::matter::utils::storage::Vec::init(),
+            connection: None,
+            conn_gen: 0,
+            in_data <- Vec::init(),
+            out_data <- Vec::init(),
             response <- gatt_response::init(),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct IndBuffer {
-    addr: BtAddr,
-    data: rs_matter_stack::matter::utils::storage::Vec<u8, MAX_MTU_SIZE>,
-}
-
-impl IndBuffer {
-    #[inline(always)]
-    const fn new() -> Self {
-        Self {
-            addr: BtAddr([0; 6]),
-            data: rs_matter_stack::matter::utils::storage::Vec::new(),
-        }
-    }
-
-    fn init() -> impl Init<Self> {
-        init!(Self {
-            addr: BtAddr([0; 6]),
-            data <- rs_matter_stack::matter::utils::storage::Vec::init(),
         })
     }
 }
@@ -106,8 +96,8 @@ impl IndBuffer {
 // TODO: Revert to `EspRawMutex` when `esp-idf-svc` is updated to `embassy-sync 0.7`
 pub struct EspBtpGattContext {
     state: Mutex<CriticalSectionRawMutex /*EspRawMutex*/, RefCell<State>>,
-    ind: IfMutex<CriticalSectionRawMutex /*EspRawMutex*/, IndBuffer>,
-    ind_in_flight: Signal<CriticalSectionRawMutex /*EspRawMutex*/, bool>,
+    state_changed: Signal<CriticalSectionRawMutex /*EspRawMutex*/, ()>,
+    ind_ack: Signal<CriticalSectionRawMutex /*EspRawMutex*/, ()>,
 }
 
 impl EspBtpGattContext {
@@ -117,8 +107,8 @@ impl EspBtpGattContext {
     pub const fn new() -> Self {
         Self {
             state: Mutex::new(RefCell::new(State::new())),
-            ind: IfMutex::new(IndBuffer::new()),
-            ind_in_flight: Signal::new(false),
+            state_changed: Signal::new(),
+            ind_ack: Signal::new(),
         }
     }
 
@@ -127,8 +117,8 @@ impl EspBtpGattContext {
     pub fn init() -> impl Init<Self> {
         init!(Self {
             state <- Mutex::init(RefCell::init(State::init())),
-            ind <- IfMutex::init(IndBuffer::init()),
-            ind_in_flight: Signal::new(false),
+            state_changed: Signal::new(),
+            ind_ack: Signal::new(),
         })
     }
 
@@ -141,19 +131,13 @@ impl EspBtpGattContext {
             state.c1_handle = None;
             state.c2_handle = None;
             state.c2_cccd_handle = None;
+            state.connection = None;
+            state.in_data.clear();
+            state.out_data.clear();
         });
 
-        self.ind_in_flight.modify(|ind_inf_flight| {
-            *ind_inf_flight = false;
-            (false, ())
-        });
-
-        self.ind
-            .try_lock()
-            .map(|mut ind| {
-                ind.data.clear();
-            })
-            .map_err(|_| EspError::from_infallible::<{ ESP_ERR_INVALID_STATE }>())?;
+        self.state_changed.reset();
+        self.ind_ack.reset();
 
         Ok(())
     }
@@ -202,100 +186,127 @@ where
     }
 
     /// Run the GATT peripheral.
-    pub async fn run<F>(
-        &self,
+    pub async fn run(
+        &mut self,
+        btp: &Btp,
         service_name: &str,
         service_adv_data: &AdvData,
-        mut callback: F,
-    ) -> Result<(), EspError>
-    where
-        F: FnMut(GattPeripheralEvent) + Send + 'd,
-    {
-        let gap = EspBleGap::new(&self.driver)?;
-        let gatts = EspGatts::new(&self.driver)?;
+    ) -> Result<(), Error> {
+        let gap = EspBleGap::new(&self.driver).map_err(to_matter_err)?;
+        let gatts = EspGatts::new(&self.driver).map_err(to_matter_err)?;
+
+        let event_ctx = GattEventContext::new(self.app_id, &gap, &gatts, self.context);
 
         info!("BLE Gap and Gatts initialized");
 
         unsafe {
             gap.subscribe_nonstatic(|event| {
-                let ctx = GattExecContext::new(self.app_id, &gap, &gatts, self.context);
-
-                ctx.check_esp_status(ctx.on_gap_event(event));
-            })?;
+                event_ctx.check_esp_status(event_ctx.on_gap_event(event));
+            })
+            .map_err(to_matter_err)?;
         }
 
         let adv_data = service_adv_data.clone();
         let service_name = service_name.to_owned();
 
         unsafe {
-            gatts.subscribe_nonstatic(|(gatt_if, event)| {
-                let ctx = GattExecContext::new(self.app_id, &gap, &gatts, self.context);
-
-                ctx.check_esp_status(ctx.on_gatts_event(
-                    &service_name,
-                    &adv_data,
-                    gatt_if,
-                    event,
-                    &mut callback,
-                ))
-            })?;
+            gatts
+                .subscribe_nonstatic(|(gatt_if, event)| {
+                    event_ctx.check_esp_status(event_ctx.on_gatts_event(
+                        &service_name,
+                        &adv_data,
+                        gatt_if,
+                        event,
+                    ))
+                })
+                .map_err(to_matter_err)?;
         }
 
         info!("BLE Gap and Gatts subscriptions initialized");
 
-        gatts.register_app(self.app_id)?;
+        gatts.register_app(self.app_id).map_err(to_matter_err)?;
 
         info!("Gatts BTP app registered");
 
+        select(self.process_events(btp), self.process_indicate(btp, &gatts))
+            .coalesce()
+            .await
+    }
+
+    async fn process_events(&self, btp: &Btp) -> Result<(), Error> {
+        let mut generation = None;
+
         loop {
-            self.context
-                .ind_in_flight
-                .wait(|in_flight| (!*in_flight).then_some(()))
-                .await;
+            let processed = self.context.state.lock(|state| {
+                let mut state = state.borrow_mut();
 
-            let mut ind = self.context.ind.lock_if(|ind| !ind.data.is_empty()).await;
+                if let Some(connection) = state.connection.as_ref() {
+                    if generation != Some(state.conn_gen) {
+                        btp.reset();
+                        generation = Some(state.conn_gen);
+                    }
 
-            let ctx = GattExecContext::new(self.app_id, &gap, &gatts, self.context);
+                    if !state.in_data.is_empty() {
+                        btp.process_incoming(
+                            connection.mtu,
+                            BtAddr(connection.peer.addr()),
+                            &state.in_data,
+                        )?;
+                        state.in_data.clear();
 
-            self.context.ind_in_flight.modify(|in_flight| {
-                if !*in_flight {
-                    *in_flight = true;
-                } else {
-                    // Should not happen as the only code that sets in flight to `true`
-                    // is here
-                    unreachable!();
+                        return Ok::<_, Error>(true);
+                    }
                 }
 
-                (true, ())
-            });
+                Ok(false)
+            })?;
 
-            // TODO: Is this asynchronous?
-            let result = ctx.indicate(&ind.data, ind.addr);
-            if let Err(e) = result {
-                error!("GATT indicate failed: {e}");
+            if !processed {
+                self.context.state_changed.wait().await;
             }
-
-            ind.data.clear();
         }
     }
 
     /// Indicate new data on characteristic `C2` to a remote peer.
-    pub async fn indicate(&self, data: &[u8], address: BtAddr) -> Result<(), EspError> {
-        self.context
-            .ind
-            .with(|ind| {
-                if ind.data.is_empty() {
-                    ind.data.extend_from_slice(data).unwrap();
-                    ind.addr = address;
+    async fn process_indicate<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
+    where
+        T: Borrow<BtDriver<'d, M>>,
+    {
+        loop {
+            self.context.ind_ack.wait().await;
 
-                    Some(())
-                } else {
-                    None
+            self.context.state.lock(|state| {
+                let mut state = state.borrow_mut();
+                let state = &mut *state;
+
+                let Some(gatt_if) = state.gatt_if else {
+                    return Ok::<_, Error>(());
+                };
+
+                let Some(c2_handle) = state.c2_handle else {
+                    return Ok(());
+                };
+
+                let Some(conn) = state.connection.as_ref() else {
+                    return Ok(());
+                };
+
+                state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
+
+                let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
+                if len > 0 {
+                    let data = &state.out_data[..len];
+
+                    gatts
+                        .indicate(gatt_if, conn.conn_id, c2_handle, data)
+                        .map_err(to_matter_err)?;
+
+                    trace!("Indicated {} bytes", data.len());
                 }
-            })
-            .await;
 
-        Ok(())
+                Ok(())
+            })?;
+        }
     }
 }
 
@@ -303,36 +314,17 @@ impl<M> GattPeripheral for EspBtpGattPeripheral<'_, '_, M>
 where
     M: BleEnabled,
 {
-    async fn run<F>(
-        &self,
+    async fn run(
+        &mut self,
+        btp: &Btp,
         service_name: &str,
         adv_data: &AdvData,
-        callback: F,
-    ) -> Result<(), rs_matter_stack::matter::error::Error>
-    where
-        F: FnMut(GattPeripheralEvent) + Send + Clone + 'static,
-    {
-        EspBtpGattPeripheral::run(self, service_name, adv_data, callback)
-            .await
-            .map_err(|_| ErrorCode::BtpError)?;
-
-        Ok(())
-    }
-
-    async fn indicate(
-        &self,
-        data: &[u8],
-        address: BtAddr,
-    ) -> Result<(), rs_matter_stack::matter::error::Error> {
-        EspBtpGattPeripheral::indicate(self, data, address)
-            .await
-            .map_err(|_| ErrorCode::BtpError)?;
-
-        Ok(())
+    ) -> Result<(), Error> {
+        EspBtpGattPeripheral::run(self, btp, service_name, adv_data).await
     }
 }
 
-struct GattExecContext<'a, 'd, M, T>
+struct GattEventContext<'a, 'd, M, T>
 where
     T: Borrow<BtDriver<'d, M>>,
     M: BleEnabled,
@@ -343,7 +335,7 @@ where
     ctx: &'a EspBtpGattContext,
 }
 
-impl<'a, 'd, M, T> GattExecContext<'a, 'd, M, T>
+impl<'a, 'd, M, T> GattEventContext<'a, 'd, M, T>
 where
     T: Borrow<BtDriver<'d, M>> + Clone,
     M: BleEnabled,
@@ -362,34 +354,6 @@ where
         }
     }
 
-    fn indicate(&self, data: &[u8], address: BtAddr) -> Result<bool, EspError> {
-        let conn = self.ctx.state.lock(|state| {
-            let state = state.borrow();
-
-            let gatts_if = state.gatt_if?;
-            let c2_handle = state.c2_handle?;
-
-            let conn = state
-                .connections
-                .iter()
-                .find(|conn| conn.peer.addr() == address.0 && conn.subscribed)?;
-
-            Some((gatts_if, conn.conn_id, c2_handle))
-        });
-
-        if let Some((gatts_if, conn_id, attr_handle)) = conn {
-            self.gatts.indicate(gatts_if, conn_id, attr_handle, data)?;
-
-            trace!("Indicated {} bytes to {address}", data.len());
-
-            Ok(true)
-        } else {
-            warn!("No connection for {address}, cannot indicate");
-
-            Ok(false)
-        }
-    }
-
     fn on_gap_event(&self, event: BleGapEvent) -> Result<(), EspError> {
         if let BleGapEvent::RawAdvertisingConfigured(status) = event {
             self.check_bt_status(status)?;
@@ -399,17 +363,13 @@ where
         Ok(())
     }
 
-    fn on_gatts_event<F>(
+    fn on_gatts_event(
         &self,
         service_name: &str,
         service_adv_data: &AdvData,
         gatt_if: GattInterface,
         event: GattsEvent,
-        mut callback: F,
-    ) -> Result<(), EspError>
-    where
-        F: FnMut(GattPeripheralEvent),
-    {
+    ) -> Result<(), EspError> {
         match event {
             GattsEvent::ServiceRegistered { status, app_id } => {
                 self.check_gatt_status(status)?;
@@ -462,11 +422,14 @@ where
                 self.register_conn_mtu(conn_id, mtu)?;
             }
             GattsEvent::PeerConnected { conn_id, addr, .. } => {
-                self.create_conn(conn_id, addr)?;
+                if self.create_conn(conn_id, addr)? {
+                    self.gap.stop_advertising()?;
+                }
             }
             GattsEvent::PeerDisconnected { addr, .. } => {
-                self.delete_conn(addr, &mut callback)?;
-                self.gap.start_advertising()?;
+                if self.delete_conn(addr)? {
+                    self.gap.start_advertising()?;
+                }
             }
             GattsEvent::Write {
                 conn_id,
@@ -479,31 +442,12 @@ where
                 value,
             } => {
                 self.write(
-                    gatt_if,
-                    conn_id,
-                    trans_id,
-                    addr,
-                    handle,
-                    offset,
-                    need_rsp,
-                    is_prep,
-                    value,
-                    &mut callback,
+                    gatt_if, conn_id, trans_id, addr, handle, offset, need_rsp, is_prep, value,
                 )?;
             }
             GattsEvent::Confirm { status, .. } => {
                 self.check_gatt_status(status)?;
-                self.ctx.ind_in_flight.modify(|in_flight| {
-                    if *in_flight {
-                        *in_flight = false;
-                    } else {
-                        // Should not happen: means we have received a confirmation for
-                        // an indication we did not send.
-                        unreachable!();
-                    }
-
-                    (true, ())
-                });
+                self.ctx.ind_ack.signal(());
             }
             _ => (),
         }
@@ -683,7 +627,7 @@ where
         self.ctx.state.lock(|state| {
             let mut state = state.borrow_mut();
             if let Some(conn) = state
-                .connections
+                .connection
                 .iter_mut()
                 .find(|conn| conn.conn_id == conn_id)
             {
@@ -694,20 +638,23 @@ where
         Ok(())
     }
 
-    fn create_conn(&self, conn_id: ConnectionId, addr: BdAddr) -> Result<(), EspError> {
-        let added = self.ctx.state.lock(|state| {
+    fn create_conn(&self, conn_id: ConnectionId, addr: BdAddr) -> Result<bool, EspError> {
+        let done = self.ctx.state.lock(|state| {
             let mut state = state.borrow_mut();
-            if state.connections.len() < MAX_CONNECTIONS {
-                state
-                    .connections
-                    .push(Connection {
-                        peer: addr,
-                        conn_id,
-                        subscribed: false,
-                        mtu: None,
-                    })
-                    .map_err(|_| ())
-                    .unwrap();
+            if state.connection.is_none() {
+                state.connection = Some(Connection {
+                    peer: addr,
+                    conn_id,
+                    subscribed: false,
+                    mtu: None,
+                });
+
+                state.in_data.clear();
+                state.out_data.clear();
+
+                state.conn_gen += 1;
+                self.ctx.state_changed.signal(());
+                self.ctx.ind_ack.signal(());
 
                 true
             } else {
@@ -715,35 +662,38 @@ where
             }
         });
 
-        if added {
+        if done {
             self.gap.set_conn_params_conf(addr, 10, 20, 0, 400)?;
         }
 
-        Ok(())
+        Ok(done)
     }
 
-    fn delete_conn<F>(&self, addr: BdAddr, callback: &mut F) -> Result<(), EspError>
-    where
-        F: FnMut(GattPeripheralEvent),
-    {
-        self.ctx.state.lock(|state| {
+    fn delete_conn(&self, addr: BdAddr) -> Result<bool, EspError> {
+        let done = self.ctx.state.lock(|state| {
             let mut state = state.borrow_mut();
-            if let Some(index) = state
-                .connections
-                .iter()
-                .position(|Connection { peer, .. }| *peer == addr)
+            if state
+                .connection
+                .as_ref()
+                .map(|conn| conn.peer == addr)
+                .unwrap_or(false)
             {
-                state.connections.swap_remove(index);
+                state.connection = None;
+
+                state.conn_gen += 1;
+                self.ctx.state_changed.signal(());
+
+                true
+            } else {
+                false
             }
         });
 
-        callback(GattPeripheralEvent::NotifyUnsubscribed(BtAddr(addr.into())));
-
-        Ok(())
+        Ok(done)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn write<F>(
+    fn write(
         &self,
         gatt_if: GattInterface,
         conn_id: ConnectionId,
@@ -754,20 +704,19 @@ where
         need_rsp: bool,
         is_prep: bool,
         value: &[u8],
-        callback: &mut F,
-    ) -> Result<(), EspError>
-    where
-        F: FnMut(GattPeripheralEvent),
-    {
-        let event = self.ctx.state.lock(|state| {
+    ) -> Result<(), EspError> {
+        let respond = self.ctx.state.lock(|state| {
             let mut state = state.borrow_mut();
             let c1_handle = state.c1_handle;
             let c2_cccd_handle = state.c2_cccd_handle;
 
-            let conn = state
-                .connections
-                .iter_mut()
-                .find(|conn| conn.conn_id == conn_id)?;
+            let Some(conn) = state.connection.as_mut() else {
+                return false;
+            };
+
+            if conn.conn_id != conn_id {
+                return false;
+            }
 
             if c2_cccd_handle == Some(handle) {
                 if offset == 0 && value.len() == 2 {
@@ -775,13 +724,13 @@ where
                     if value == 0x02 {
                         if !conn.subscribed {
                             conn.subscribed = true;
-                            return Some(GattPeripheralEvent::NotifySubscribed(BtAddr(
-                                addr.into(),
-                            )));
+                            self.ctx.state_changed.signal(());
+                            return true;
                         }
                     } else if conn.subscribed {
                         conn.subscribed = false;
-                        return Some(GattPeripheralEvent::NotifyUnsubscribed(BtAddr(addr.into())));
+                        self.ctx.state_changed.signal(());
+                        return true;
                     }
                 }
             } else if c1_handle == Some(handle) && offset == 0 {
@@ -789,22 +738,17 @@ where
 
                 trace!("Got {} bytes to {address}", value.len());
 
-                return Some(GattPeripheralEvent::Write {
-                    address,
-                    data: value,
-                    gatt_mtu: conn.mtu,
-                });
+                self.ctx.state_changed.signal(());
+                return true;
             }
 
-            None
+            false
         });
 
-        if let Some(event) = event {
+        if respond {
             self.send_write_response(
                 gatt_if, conn_id, trans_id, handle, offset, need_rsp, is_prep, value,
             )?;
-
-            callback(event);
         }
 
         Ok(())
@@ -886,4 +830,10 @@ mod gatt_response {
            }),
         })
     }
+}
+
+fn to_matter_err<E: Debug>(err: E) -> Error {
+    error!("BLE error: {:?}", err);
+
+    ErrorCode::BtpError.into()
 }
