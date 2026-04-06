@@ -30,6 +30,7 @@ mod example {
 
     use alloc::sync::Arc;
 
+    use embassy_futures::select::{select, Either};
     use esp_idf_matter::init_async_io;
     use esp_idf_matter::matter::crypto::{default_crypto, Crypto};
     use esp_idf_matter::matter::dm::clusters::desc::{self, ClusterHandler as _, DescHandler};
@@ -40,13 +41,16 @@ mod example {
     };
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, EpClMatcher, Node};
+    use esp_idf_matter::matter::error::Error;
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
+    use esp_idf_matter::matter::utils::select::Coalesce;
     use esp_idf_matter::matter::{clusters, devices};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::wireless::{EspMatterWifi, EspWifiMatterStack};
 
     use esp_idf_svc::bt::reduce_bt_memory;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
+    use esp_idf_svc::hal::gpio::{Input, PinDriver, Pull};
     use esp_idf_svc::hal::peripherals::Peripherals;
     use esp_idf_svc::hal::task::block_on;
     use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
@@ -54,7 +58,7 @@ mod example {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use esp_idf_svc::timer::EspTaskTimerService;
 
-    use log::{error, info};
+    use log::{error, info, warn};
 
     use static_cell::StaticCell;
 
@@ -62,6 +66,8 @@ mod example {
 
     const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
     const BUMP_SIZE: usize = 13500;
+
+    const RESET_SECS: u64 = 3;
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
@@ -156,28 +162,56 @@ mod example {
         let mut kv = EspKvBlobStore::new_default(nvs.clone())?;
         stack.startup(&crypto, &mut kv).await?;
 
-        // Wrap the KV BLOB store as a shared reference, so that it can be used both by `rs-matter` and the user
-        let kv = stack.create_shared_kv(kv)?;
+        if stack.is_commissioned() {
+            info!(
+                "To reset, press and hold the Boot Mode pin (GPIO9) for {} or more seconds",
+                RESET_SECS
+            );
+        }
 
-        // Run the Matter stack with our handler
-        // Using `pin!` is completely optional, but reduces the size of the final future
-        let matter = pin!(stack.run_coex(
-            // The Matter stack needs the Wifi/BLE modem peripheral
-            EspMatterWifi::new_with_builtin_mdns(peripherals.modem, sysloop, timers, nvs, stack),
-            // The crypto provider
-            &crypto,
-            // Our `AsyncHandler` + `AsyncMetadata` impl
-            (NODE, handler),
-            // The Matter stack needs a blob store to store its state
-            &kv,
-            // No user future to run
-            (),
-        ));
+        {
+            // Wrap the KV BLOB store as a shared reference, so that it can be used both by `rs-matter` and the user
+            let kv = stack.create_shared_kv(&mut kv)?;
 
-        // Run Matter
-        matter.await?;
+            // Run the Matter stack with our handler
+            // Using `pin!` is completely optional, but reduces the size of the final future
+            let mut matter = pin!(stack.run_coex(
+                // The Matter stack needs the Wifi/BLE modem peripheral
+                EspMatterWifi::new_with_builtin_mdns(
+                    peripherals.modem,
+                    sysloop,
+                    timers,
+                    nvs,
+                    stack
+                ),
+                // The crypto provider
+                &crypto,
+                // Our `AsyncHandler` + `AsyncMetadata` impl
+                (NODE, handler),
+                // The Matter stack needs a blob store to store its state
+                &kv,
+                // No user future to run
+                (),
+            ));
 
-        Ok(())
+            // Run Matter and also wait for a reset signal
+            let mut wait_reset = pin!(wait_pin_low(PinDriver::input(
+                peripherals.pins.gpio9,
+                Pull::Down
+            )?));
+
+            select(&mut matter, &mut wait_reset).coalesce().await?;
+        }
+
+        // If we get here, with no errors, this means the user is willing to reset the storage
+        // by holding the BOOT pin low 3 or more seconds
+        warn!("Resetting storage");
+
+        stack.reset(kv).await?;
+
+        warn!("Rebooting...");
+
+        esp_idf_svc::hal::reset::restart()
     }
 
     /// The Matter stack is allocated statically to avoid
@@ -201,4 +235,32 @@ mod example {
             },
         ],
     };
+
+    async fn wait_pin_low(mut pin: PinDriver<'_, Input>) -> Result<(), Error> {
+        loop {
+            let _ = pin.wait_for_low().await;
+
+            // Debounce
+            embassy_time::Timer::after_millis(50).await;
+
+            if pin.is_low() {
+                warn!(
+                    "Detected Boot Mode pin low, keep it low for {} more seconds to reset the storage",
+                    RESET_SECS
+                );
+
+                let result = select(
+                    pin.wait_for_high(),
+                    embassy_time::Timer::after_secs(RESET_SECS),
+                )
+                .await;
+
+                if matches!(result, Either::Second(())) {
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
