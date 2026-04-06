@@ -8,8 +8,7 @@ use esp_idf_svc::sys::EspError;
 use log::{debug, trace};
 
 use rs_matter_stack::matter::error::Error;
-
-use rs_matter_stack::persist::KvBlobStore;
+use rs_matter_stack::matter::persist::KvBlobStore;
 
 use crate::error::to_persist_error;
 
@@ -37,12 +36,7 @@ where
         Ok(Self(EspNvs::new(nvs, namespace, true)?))
     }
 
-    fn load<F>(&self, key: u16, buf: &mut [u8], cb: F) -> Result<(), Error>
-    where
-        F: FnOnce(Option<&[u8]>) -> Result<(), Error>,
-    {
-        // TODO: Not really async
-
+    fn load<'a>(&self, key: u16, buf: &'a mut [u8]) -> Result<Option<&'a [u8]>, Error> {
         let mut skey = SKey::new();
 
         let data = self
@@ -56,18 +50,10 @@ where
             data.map(|data| data.len())
         );
 
-        cb(data)
+        Ok(data)
     }
 
-    fn store<F>(&mut self, key: u16, buf: &mut [u8], cb: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut [u8]) -> Result<usize, Error>,
-    {
-        // TODO: Not really async
-
-        let len = cb(buf)?;
-        let data = &buf[..len];
-
+    fn store(&mut self, key: u16, data: &[u8]) -> Result<(), Error> {
         let mut skey = SKey::new();
 
         self.0
@@ -83,9 +69,7 @@ where
         Ok(())
     }
 
-    fn remove(&mut self, key: u16, _buf: &mut [u8]) -> Result<(), Error> {
-        // TODO: Not really async
-
+    fn remove(&mut self, key: u16) -> Result<(), Error> {
         let mut skey = SKey::new();
 
         self.0
@@ -109,21 +93,15 @@ impl<T> KvBlobStore for EspKvBlobStore<T>
 where
     T: NvsPartitionId,
 {
-    async fn load<F>(&mut self, key: u16, buf: &mut [u8], cb: F) -> Result<(), Error>
-    where
-        F: FnOnce(Option<&[u8]>) -> Result<(), Error>,
-    {
-        EspKvBlobStore::load(self, key, buf, cb)
+    fn load<'a>(&mut self, key: u16, buf: &'a mut [u8]) -> Result<Option<&'a [u8]>, Error> {
+        EspKvBlobStore::load(self, key, buf)
     }
 
-    async fn store<F>(&mut self, key: u16, buf: &mut [u8], cb: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut [u8]) -> Result<usize, Error>,
-    {
-        EspKvBlobStore::store(self, key, buf, cb)
+    fn store(&mut self, key: u16, data: &[u8], _buf: &mut [u8]) -> Result<(), Error> {
+        EspKvBlobStore::store(self, key, data)
     }
 
-    async fn remove(&mut self, key: u16, buf: &mut [u8]) -> Result<(), Error> {
-        EspKvBlobStore::remove(self, key, buf)
+    fn remove(&mut self, key: u16, _buf: &mut [u8]) -> Result<(), Error> {
+        EspKvBlobStore::remove(self, key)
     }
 }

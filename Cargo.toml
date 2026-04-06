@@ -18,9 +18,11 @@ rust-version = "1.84"
 
 [patch.crates-io]
 #rs-matter = { git = "https://github.com/project-chip/rs-matter" }
-rs-matter = { git = "https://github.com/sysgrok/rs-matter", branch = "next" }
+#rs-matter = { git = "https://github.com/sysgrok/rs-matter", branch = "next" }
+rs-matter = { git = "https://github.com/sysgrok/rs-matter", branch = "inband-persistence" }
 #rs-matter = { path = "../rs-matter/rs-matter" }
-rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "next" }
+#rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "next" }
+rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "inband-persistence" }
 #rs-matter-stack = { path = "../rs-matter-stack" }
 
 [profile.release]
@@ -28,7 +30,7 @@ opt-level = "s"
 
 [profile.dev]
 debug = true
-opt-level = "z"
+opt-level = "s"
 
 [features]
 #default = ["std", "log", "rustcrypto"]

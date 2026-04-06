@@ -426,10 +426,9 @@ where
         }
     }
 
-    pub async fn run<C: Crypto>(
+    pub async fn run(
         &mut self,
         matter: &Matter<'_>,
-        crypto: C,
         notify: &dyn ChangeNotify,
         _ipv6: core::net::Ipv6Addr,
     ) -> Result<(), Error> {
@@ -488,15 +487,18 @@ where
             matter.wait_mdns().await;
 
             let mut services = Vec::<_, MAX_MATTER_SERVICES>::new();
-            matter.mdns_services(&crypto, notify, |service| {
-                if services.push(service).is_err() {
-                    error!("Too many mDNS services registered, max is {MAX_MATTER_SERVICES}");
+            matter.mdns_services(
+                |e, c, a| notify.notify(e, c, a),
+                |service| {
+                    if services.push(service).is_err() {
+                        error!("Too many mDNS services registered, max is {MAX_MATTER_SERVICES}");
 
-                    Err(ErrorCode::ConstraintError)?;
-                }
+                        Err(ErrorCode::ConstraintError)?;
+                    }
 
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
 
             info!("mDNS services changed, updating...");
 
@@ -588,7 +590,7 @@ where
     async fn run<C, U>(
         &mut self,
         matter: &Matter<'_>,
-        crypto: C,
+        _crypto: C,
         notify: &dyn ChangeNotify,
         _udp: U,
         _mac: &[u8],
@@ -600,7 +602,7 @@ where
         C: Crypto,
         U: edge_nal::UdpBind,
     {
-        Self::run(self, matter, crypto, notify, ipv6).await
+        Self::run(self, matter, notify, ipv6).await
     }
 }
 
