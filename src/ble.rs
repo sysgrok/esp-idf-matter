@@ -270,51 +270,91 @@ where
                 Ok(false)
             })?;
 
-            if !processed {
+            if processed {
+                // BTP just consumed an inbound frame; the higher layer
+                // (BTP ACK or whatever SecureChannel queued in response)
+                // very likely has outgoing data waiting. `process_indicate`
+                // is asleep on `ind_ack`, and nobody else signals it after
+                // the initial connect, so without this nudge the response
+                // is never flushed and the commissioner times out.
+                self.context.ind_ack.signal(());
+            } else {
                 self.context.state_changed.wait_signalled().await;
             }
         }
     }
 
     /// Indicate new data on characteristic `C2` to a remote peer.
+    ///
+    /// BTP itself owns the "is there outgoing data?" signal via
+    /// `wait_outgoing`. We block on that, then drain `process_outgoing`,
+    /// pacing each indication against the central's GATT Confirm
+    /// (`ind_ack`) because indications must be acknowledged before the
+    /// next one is sent.
     async fn process_indicate<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
     where
         T: Borrow<BtDriver<'d, M>>,
     {
         loop {
-            self.context.ind_ack.wait_signalled().await;
+            // Wait until BTP has something to send.
+            btp.wait_outgoing().await;
 
-            self.context.state.lock(|state| {
-                let mut state = state.borrow_mut();
-                let state = &mut *state;
+            // Drain outgoing data, one indication per loop, pacing on
+            // GATT Confirm.
+            loop {
+                let to_send = self.context.state.lock(|state| {
+                    let mut state = state.borrow_mut();
+                    let state = &mut *state;
 
-                let Some(gatt_if) = state.gatt_if else {
-                    return Ok::<_, Error>(());
+                    let Some(gatt_if) = state.gatt_if else {
+                        return Ok::<_, Error>(None);
+                    };
+                    let Some(c2_handle) = state.c2_handle else {
+                        return Ok(None);
+                    };
+                    let Some(conn) = state.connection.as_ref() else {
+                        return Ok(None);
+                    };
+                    // Indications go nowhere if the central hasn't yet
+                    // written 0x0002 to the c2 CCCD; bail out and let the
+                    // subscribe path re-signal us when it's safe.
+                    if !conn.subscribed {
+                        return Ok(None);
+                    }
+
+                    state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
+                    let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
+                    if len == 0 {
+                        return Ok(None);
+                    }
+                    Ok(Some((gatt_if, conn.conn_id, c2_handle, len)))
+                })?;
+
+                let Some((gatt_if, conn_id, c2_handle, len)) = to_send else {
+                    break;
                 };
 
-                let Some(c2_handle) = state.c2_handle else {
-                    return Ok(());
-                };
+                // Clear any stale `ind_ack` (e.g. set on connect /
+                // subscribe / a previous Confirm) so the wait below
+                // actually waits for *this* indication's Confirm.
+                self.context.ind_ack.modify(|s| {
+                    *s = None;
+                    (false, ())
+                });
 
-                let Some(conn) = state.connection.as_ref() else {
-                    return Ok(());
-                };
-
-                state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
-
-                let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
-                if len > 0 {
+                self.context.state.lock(|state| {
+                    let state = state.borrow();
                     let data = &state.out_data[..len];
-
                     gatts
-                        .indicate(gatt_if, conn.conn_id, c2_handle, data)
+                        .indicate(gatt_if, conn_id, c2_handle, data)
                         .map_err(to_matter_err)?;
-
                     trace!("Indicated {} bytes", data.len());
-                }
+                    Ok::<_, Error>(())
+                })?;
 
-                Ok(())
-            })?;
+                // Wait for GATT Confirm before sending the next chunk.
+                self.context.ind_ack.wait_signalled().await;
+            }
         }
     }
 }
@@ -732,6 +772,11 @@ where
                         if !conn.subscribed {
                             conn.subscribed = true;
                             self.ctx.state_changed.signal(());
+                            // If BTP queued a response while we were still
+                            // unsubscribed (e.g. handshake reply), flush it
+                            // now that indications can actually reach the
+                            // central.
+                            self.ctx.ind_ack.signal(());
                             return true;
                         }
                     } else if conn.subscribed {
@@ -745,6 +790,18 @@ where
 
                 trace!("Got {} bytes to {address}", value.len());
 
+                // The c1 write contains the BTP frame the commissioner sent
+                // us. `process_events` reads it from `state.in_data` and
+                // hands it to BTP. Without this copy, `in_data` stays empty
+                // forever and BTP never sees anything (HCI link stays up
+                // but BTP handshake silently times out from the central's
+                // perspective).
+                if state.in_data.extend_from_slice(value).is_err() {
+                    warn!(
+                        "Dropping {} bytes on c1: in_data buffer full",
+                        value.len()
+                    );
+                }
                 self.ctx.state_changed.signal(());
                 return true;
             }
