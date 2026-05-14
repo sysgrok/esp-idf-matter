@@ -797,10 +797,7 @@ where
                 // but BTP handshake silently times out from the central's
                 // perspective).
                 if state.in_data.extend_from_slice(value).is_err() {
-                    warn!(
-                        "Dropping {} bytes on c1: in_data buffer full",
-                        value.len()
-                    );
+                    warn!("Dropping {} bytes on c1: in_data buffer full", value.len());
                 }
                 self.ctx.state_changed.signal(());
                 return true;
