@@ -290,10 +290,11 @@ where
     /// In that window an indication would be silently dropped by the
     /// host stack, so we bail out of the drain loop. To pick the drain
     /// back up once the subscribe arrives we wait on either of:
-    ///   * `btp.wait_outgoing()` — BTP has new outgoing data, OR
-    ///   * `state_changed`       — connection/subscribe/c1-write changed,
-    ///                             possibly unblocking a previously
-    ///                             skipped drain.
+    ///
+    /// - `btp.wait_outgoing()` — BTP has new outgoing data.
+    /// - `state_changed` — connection / subscribe / c1-write changed,
+    ///   possibly unblocking a previously skipped drain.
+    ///
     /// Each indication is paced against its GATT Confirm (`ind_ack`)
     /// because indications must be acknowledged before the next one is
     /// sent. The slicing and the `indicate` call share the same state
