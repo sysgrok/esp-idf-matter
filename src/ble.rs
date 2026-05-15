@@ -270,87 +270,98 @@ where
                 Ok(false)
             })?;
 
-            if processed {
-                // BTP just consumed an inbound frame; the higher layer
-                // (BTP ACK or whatever SecureChannel queued in response)
-                // very likely has outgoing data waiting. `process_indicate`
-                // is asleep on `ind_ack`, and nobody else signals it after
-                // the initial connect, so without this nudge the response
-                // is never flushed and the commissioner times out.
-                self.context.ind_ack.signal(());
-            } else {
+            if !processed {
                 self.context.state_changed.wait_signalled().await;
             }
+            // When we did process an inbound frame, BTP signals its own
+            // `outg_notif` (via `process_incoming`) for any response it
+            // queued, so `process_indicate`'s `wait_outgoing` arm wakes
+            // up on its own — no explicit nudge needed here.
         }
     }
 
     /// Indicate new data on characteristic `C2` to a remote peer.
     ///
-    /// BTP itself owns the "is there outgoing data?" signal via
-    /// `wait_outgoing`. We block on that, then drain `process_outgoing`,
-    /// pacing each indication against the central's GATT Confirm
-    /// (`ind_ack`) because indications must be acknowledged before the
-    /// next one is sent.
+    /// BTP owns the "is there outgoing data?" signal via `wait_outgoing`,
+    /// but that alone isn't enough: BTP may queue an outgoing frame
+    /// *before* the central has finished writing the c2 CCCD subscribe
+    /// (the chip-tool / matter.js path is exactly this — the BTP
+    /// HandshakeRequest is written to c1 before the CCCD write to c2).
+    /// In that window an indication would be silently dropped by the
+    /// host stack, so we bail out of the drain loop. To pick the drain
+    /// back up once the subscribe arrives we wait on either of:
+    ///   * `btp.wait_outgoing()` — BTP has new outgoing data, OR
+    ///   * `state_changed`       — connection/subscribe/c1-write changed,
+    ///                             possibly unblocking a previously
+    ///                             skipped drain.
+    /// Each indication is paced against its GATT Confirm (`ind_ack`)
+    /// because indications must be acknowledged before the next one is
+    /// sent. The slicing and the `indicate` call share the same state
+    /// lock so a concurrent BLE-callback `create_conn` (which resets
+    /// `out_data`) can't invalidate the slice between the two.
     async fn process_indicate<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
     where
         T: Borrow<BtDriver<'d, M>>,
     {
         loop {
-            // Wait until BTP has something to send.
-            btp.wait_outgoing().await;
+            // Wake on either BTP having data OR a relevant state change
+            // (subscribe-completed, new connection, c1 write arrived).
+            // We don't care which fired — just attempt the drain.
+            select(
+                btp.wait_outgoing(),
+                self.context.state_changed.wait_signalled(),
+            )
+            .await;
 
             // Drain outgoing data, one indication per loop, pacing on
             // GATT Confirm.
             loop {
-                let to_send = self.context.state.lock(|state| {
-                    let mut state = state.borrow_mut();
-                    let state = &mut *state;
-
-                    let Some(gatt_if) = state.gatt_if else {
-                        return Ok::<_, Error>(None);
-                    };
-                    let Some(c2_handle) = state.c2_handle else {
-                        return Ok(None);
-                    };
-                    let Some(conn) = state.connection.as_ref() else {
-                        return Ok(None);
-                    };
-                    // Indications go nowhere if the central hasn't yet
-                    // written 0x0002 to the c2 CCCD; bail out and let the
-                    // subscribe path re-signal us when it's safe.
-                    if !conn.subscribed {
-                        return Ok(None);
-                    }
-
-                    state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
-                    let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
-                    if len == 0 {
-                        return Ok(None);
-                    }
-                    Ok(Some((gatt_if, conn.conn_id, c2_handle, len)))
-                })?;
-
-                let Some((gatt_if, conn_id, c2_handle, len)) = to_send else {
-                    break;
-                };
-
-                // Clear any stale `ind_ack` (e.g. set on connect /
-                // subscribe / a previous Confirm) so the wait below
-                // actually waits for *this* indication's Confirm.
+                // Clear any stale `ind_ack` (set on connect or a previous
+                // Confirm) so the wait *after* the next indicate actually
+                // waits for *that* indication's Confirm.
                 self.context.ind_ack.modify(|s| {
                     *s = None;
                     (false, ())
                 });
 
-                self.context.state.lock(|state| {
-                    let state = state.borrow();
+                let did_indicate = self.context.state.lock(|state| {
+                    let mut state = state.borrow_mut();
+                    let state = &mut *state;
+
+                    let Some(gatt_if) = state.gatt_if else {
+                        return Ok::<_, Error>(false);
+                    };
+                    let Some(c2_handle) = state.c2_handle else {
+                        return Ok(false);
+                    };
+                    let Some(conn) = state.connection.as_ref() else {
+                        return Ok(false);
+                    };
+                    // Indications go nowhere if the central hasn't yet
+                    // written 0x0002 to the c2 CCCD; bail out and rely on
+                    // the subscribe path re-signalling `state_changed`
+                    // to bring us back into this drain.
+                    if !conn.subscribed {
+                        return Ok(false);
+                    }
+                    let conn_id = conn.conn_id;
+
+                    state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
+                    let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
+                    if len == 0 {
+                        return Ok(false);
+                    }
                     let data = &state.out_data[..len];
                     gatts
                         .indicate(gatt_if, conn_id, c2_handle, data)
                         .map_err(to_matter_err)?;
                     trace!("Indicated {} bytes", data.len());
-                    Ok::<_, Error>(())
+                    Ok(true)
                 })?;
+
+                if !did_indicate {
+                    break;
+                }
 
                 // Wait for GATT Confirm before sending the next chunk.
                 self.context.ind_ack.wait_signalled().await;
@@ -771,12 +782,10 @@ where
                     if value == 0x02 {
                         if !conn.subscribed {
                             conn.subscribed = true;
+                            // `process_indicate` watches `state_changed`
+                            // and will pick up any response BTP queued
+                            // while we were still unsubscribed.
                             self.ctx.state_changed.signal(());
-                            // If BTP queued a response while we were still
-                            // unsubscribed (e.g. handshake reply), flush it
-                            // now that indications can actually reach the
-                            // central.
-                            self.ctx.ind_ack.signal(());
                             return true;
                         }
                     } else if conn.subscribed {
