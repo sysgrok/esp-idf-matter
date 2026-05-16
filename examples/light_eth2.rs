@@ -58,7 +58,7 @@ mod example {
     extern crate alloc;
 
     const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
-    const BUMP_SIZE: usize = 13500;
+    const BUMP_SIZE: usize = 15000;
 
     const THREAD_DATASET: &str = env!("THREAD_DATASET");
 

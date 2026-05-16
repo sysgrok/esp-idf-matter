@@ -54,7 +54,12 @@ struct State {
     connection: Option<Connection>,
     conn_gen: usize,
     in_data: Vec<u8, MAX_MTU_SIZE>,
-    out_data: Vec<u8, MAX_MTU_SIZE>, // TODO: Remove this once we can get access to the inner array inside `GattResponse`
+    /// The transaction ID corresponding to the incoming data (if non-empty)
+    in_trans: u32,
+    // TODO: Remove this once we can get access to the inner array inside `GattResponse`
+    out_data: Vec<u8, MAX_MTU_SIZE>,
+    /// Whether the current outgoing indication has been acknowledged by the peer or not
+    out_nack: bool,
     response: GattResponse,
 }
 
@@ -70,7 +75,9 @@ impl State {
             connection: None,
             conn_gen: 0,
             in_data: Vec::new(),
+            in_trans: 0,
             out_data: Vec::new(),
+            out_nack: false,
             response: GattResponse::new(),
         }
     }
@@ -85,7 +92,9 @@ impl State {
             connection: None,
             conn_gen: 0,
             in_data <- Vec::init(),
+            in_trans: 0,
             out_data <- Vec::init(),
+            out_nack: false,
             response <- gatt_response::init(),
         })
     }
@@ -95,9 +104,13 @@ impl State {
 /// Isolated as a separate struct to allow for `const fn` construction
 /// and static allocation.
 pub struct EspBtpGattContext {
+    /// The mutable state of the GATT peripheral, protected by a mutex for safe concurrent access from both the GATT event handlers
+    /// and the async tasks processing the events and indications.
     state: Mutex<RefCell<State>, CriticalSectionRawMutex>,
-    state_changed: Signal<Option<()>, CriticalSectionRawMutex>,
-    ind_ack: Signal<Option<()>, CriticalSectionRawMutex>,
+    /// A signal used to awake the `process_incoming()` loop as there might be incoming data (c1 writes) to process.
+    notify_process_incoming: Signal<Option<()>, CriticalSectionRawMutex>,
+    /// A signal used to awake the `process_outgoing()` loop as there might be outgoing data (c2 indications) to process.
+    notify_process_outgoing: Signal<Option<()>, CriticalSectionRawMutex>,
 }
 
 impl EspBtpGattContext {
@@ -107,8 +120,8 @@ impl EspBtpGattContext {
     pub const fn new() -> Self {
         Self {
             state: Mutex::new(RefCell::new(State::new())),
-            state_changed: Signal::new(None),
-            ind_ack: Signal::new(None),
+            notify_process_incoming: Signal::new(None),
+            notify_process_outgoing: Signal::new(None),
         }
     }
 
@@ -117,8 +130,8 @@ impl EspBtpGattContext {
     pub fn init() -> impl Init<Self> {
         init!(Self {
             state <- Mutex::init(RefCell::init(State::init())),
-            state_changed: Signal::new(None),
-            ind_ack: Signal::new(None),
+            notify_process_incoming <- Signal::init(None),
+            notify_process_outgoing <- Signal::init(None),
         })
     }
 
@@ -133,16 +146,17 @@ impl EspBtpGattContext {
             state.c2_cccd_handle = None;
             state.connection = None;
             state.in_data.clear();
-            state.out_data.clear();
+            state.in_trans = 0;
+            state.out_nack = false;
         });
 
-        self.state_changed.modify(|s| {
+        self.notify_process_incoming.modify(|s| {
             *s = None;
 
             (false, ())
         });
 
-        self.ind_ack.modify(|s| {
+        self.notify_process_outgoing.modify(|s| {
             *s = None;
 
             (false, ())
@@ -237,12 +251,22 @@ where
 
         info!("Gatts BTP app registered");
 
-        select(self.process_events(btp), self.process_indicate(btp, &gatts))
-            .coalesce()
-            .await
+        select(
+            self.process_incoming(btp, &gatts),
+            self.process_outgoing(btp, &gatts),
+        )
+        .coalesce()
+        .await
     }
 
-    async fn process_events(&self, btp: &Btp) -> Result<(), Error> {
+    /// Process incoming writes on characteristic `C1` from a remote peer.
+    ///
+    /// While it might seem that `process_incoming` can be called directly from `GattEventContext::on_gatts_event`,
+    /// this is not generally possible because `Btp` might not be `Sync`, while `GattEventContext::on_gatts_event` should be.
+    async fn process_incoming<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
+    where
+        T: Borrow<BtDriver<'d, M>>,
+    {
         let mut generation = None;
 
         loop {
@@ -261,6 +285,17 @@ where
                             BtAddr(connection.peer.addr()),
                             &state.in_data,
                         )?;
+
+                        gatts
+                            .send_response(
+                                state.gatt_if.unwrap_or(0),
+                                connection.conn_id,
+                                state.in_trans,
+                                GattStatus::Ok,
+                                None,
+                            )
+                            .map_err(to_matter_err)?;
+
                         state.in_data.clear();
 
                         return Ok::<_, Error>(true);
@@ -271,34 +306,44 @@ where
             })?;
 
             if !processed {
-                self.context.state_changed.wait_signalled().await;
+                self.context.notify_process_incoming.wait_signalled().await;
             }
         }
     }
 
     /// Indicate new data on characteristic `C2` to a remote peer.
-    async fn process_indicate<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
+    async fn process_outgoing<T>(&self, btp: &Btp, gatts: &EspGatts<'d, M, T>) -> Result<(), Error>
     where
         T: Borrow<BtDriver<'d, M>>,
     {
         loop {
-            self.context.ind_ack.wait_signalled().await;
-
-            self.context.state.lock(|state| {
+            let processed = self.context.state.lock(|state| {
                 let mut state = state.borrow_mut();
                 let state = &mut *state;
 
                 let Some(gatt_if) = state.gatt_if else {
-                    return Ok::<_, Error>(());
+                    return Ok::<_, Error>(false);
                 };
 
                 let Some(c2_handle) = state.c2_handle else {
-                    return Ok(());
+                    return Ok(false);
                 };
 
                 let Some(conn) = state.connection.as_ref() else {
-                    return Ok(());
+                    return Ok(false);
                 };
+
+                if !conn.subscribed {
+                    // Peer is not subscribed to indications,
+                    // so we shouldn't send anything
+                    return Ok(false);
+                }
+
+                if state.out_nack {
+                    // The previous indication has not been acknowledged
+                    // by the peer yet, so we shouldn't send a new one
+                    return Ok(false);
+                }
 
                 state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
 
@@ -310,11 +355,26 @@ where
                         .indicate(gatt_if, conn.conn_id, c2_handle, data)
                         .map_err(to_matter_err)?;
 
-                    trace!("Indicated {} bytes", data.len());
-                }
+                    // Mark the current outgoing indication as not acknowledged
+                    // until we receive the acknowledgment from the peer.
+                    state.out_nack = true;
 
-                Ok(())
+                    trace!("Indicated {} bytes", data.len());
+
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
             })?;
+
+            if !processed {
+                select(
+                    btp.wait_outgoing(),
+                    self.context.notify_process_outgoing.wait_signalled(),
+                )
+                .coalesce()
+                .await;
+            }
         }
     }
 }
@@ -454,7 +514,12 @@ where
             }
             GattsEvent::Confirm { status, .. } => {
                 self.check_gatt_status(status)?;
-                self.ctx.ind_ack.signal(());
+                self.ctx.state.lock(|state| {
+                    state.borrow_mut().out_nack = false;
+                    // Awake the `process_indicate()` loop now that
+                    // the previous indication has been acknowledged by the peer.
+                    self.ctx.notify_process_outgoing.signal(());
+                });
             }
             _ => (),
         }
@@ -657,11 +722,10 @@ where
                 });
 
                 state.in_data.clear();
-                state.out_data.clear();
+                state.out_nack = false;
 
                 state.conn_gen += 1;
-                self.ctx.state_changed.signal(());
-                self.ctx.ind_ack.signal(());
+                self.ctx.notify_process_incoming.signal(());
 
                 true
             } else {
@@ -688,7 +752,7 @@ where
                 state.connection = None;
 
                 state.conn_gen += 1;
-                self.ctx.state_changed.signal(());
+                self.ctx.notify_process_incoming.signal(());
 
                 true
             } else {
@@ -731,22 +795,31 @@ where
                     if value == 0x02 {
                         if !conn.subscribed {
                             conn.subscribed = true;
-                            self.ctx.state_changed.signal(());
+                            self.ctx.notify_process_incoming.signal(());
+                            self.ctx.notify_process_outgoing.signal(());
                             return true;
                         }
                     } else if conn.subscribed {
                         conn.subscribed = false;
-                        self.ctx.state_changed.signal(());
+                        self.ctx.notify_process_incoming.signal(());
                         return true;
                     }
                 }
             } else if c1_handle == Some(handle) && offset == 0 {
                 let address = BtAddr(addr.into());
 
+                state.in_trans = trans_id;
+                state.in_data.clear();
+                if state.in_data.extend_from_slice(value).is_err() {
+                    warn!("Dropping {} bytes on c1: in_data buffer full", value.len());
+                }
+
                 trace!("Got {} bytes to {address}", value.len());
 
-                self.ctx.state_changed.signal(());
-                return true;
+                self.ctx.notify_process_incoming.signal(());
+
+                // Do NOT return `true` here even though we have to send a response to the write request for c1,
+                // because the incoming data has NOT yet been processed by `process_incoming()`.
             }
 
             false
