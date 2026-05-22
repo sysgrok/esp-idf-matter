@@ -123,7 +123,7 @@ mod example {
         // as we'll run it in this thread
         let stack = MATTER_STACK
             .uninit()
-            .init_with(EspWifiMatterStack::init_default(
+            .init_with(EspWifiMatterStack::init(
                 &TEST_DEV_DET,
                 TEST_DEV_COMM,
                 &TEST_DEV_ATT,

@@ -100,13 +100,11 @@ mod example {
     async fn matter() -> Result<(), anyhow::Error> {
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
-        let stack = MATTER_STACK
-            .uninit()
-            .init_with(EspThreadMatterStack::init_default(
-                &TEST_DEV_DET,
-                TEST_DEV_COMM,
-                &TEST_DEV_ATT,
-            ));
+        let stack = MATTER_STACK.uninit().init_with(EspThreadMatterStack::init(
+            &TEST_DEV_DET,
+            TEST_DEV_COMM,
+            &TEST_DEV_ATT,
+        ));
 
         info!("Matter initialized");
 
