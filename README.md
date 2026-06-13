@@ -80,7 +80,7 @@ mod example {
     extern crate alloc;
 
     const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
-    const BUMP_SIZE: usize = 15000;
+    const BUMP_SIZE: usize = 17000;
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
@@ -121,13 +121,11 @@ mod example {
     async fn matter() -> Result<(), anyhow::Error> {
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
-        let stack = MATTER_STACK
-            .uninit()
-            .init_with(EspWifiMatterStack::init(
-                &TEST_DEV_DET,
-                TEST_DEV_COMM,
-                &TEST_DEV_ATT,
-            ));
+        let stack = MATTER_STACK.uninit().init_with(EspWifiMatterStack::init(
+            &TEST_DEV_DET,
+            TEST_DEV_COMM,
+            &TEST_DEV_ATT,
+        ));
 
         // Take some generic ESP-IDF stuff we'll need later
         let sysloop = EspSystemEventLoop::take()?;

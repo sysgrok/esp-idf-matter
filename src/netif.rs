@@ -266,35 +266,25 @@ pub mod utils {
 
         let ipv4: Ipv4Addr = ip_info.ip.octets().into();
 
-        let ipv6 = {
-            let mut ipv6: [esp_ip6_addr_t; LWIP_IPV6_NUM_ADDRESSES as usize] = Default::default();
-            let count = unsafe { esp_netif_get_all_ip6(netif.handle() as _, ipv6.as_mut_ptr()) };
+        // Collect *all* of the netif's IPv6 addresses. We must not keep only one
+        // (e.g. the last) here: the downstream consumer (`info_ipv6_addr`) filters
+        // this list for the link-local `fe80::` address, and on Wifi the netif
+        // typically also has a global/ULA SLAAC address. If only a single address
+        // were passed and it happened to be the global one, the link-local filter
+        // would find nothing and the interface would never be reported operational.
+        let ipv6_addrs = {
+            let mut raw: [esp_ip6_addr_t; LWIP_IPV6_NUM_ADDRESSES as usize] = Default::default();
+            let count = unsafe { esp_netif_get_all_ip6(netif.handle() as _, raw.as_mut_ptr()) };
 
-            if count > 0 {
-                let ipv6 = &ipv6[count as usize - 1];
+            let mut ipv6_addrs =
+                heapless::Vec::<Ipv6Addr, { LWIP_IPV6_NUM_ADDRESSES as usize }>::new();
 
-                [
-                    ipv6.addr[0].to_le_bytes()[0],
-                    ipv6.addr[0].to_le_bytes()[1],
-                    ipv6.addr[0].to_le_bytes()[2],
-                    ipv6.addr[0].to_le_bytes()[3],
-                    ipv6.addr[1].to_le_bytes()[0],
-                    ipv6.addr[1].to_le_bytes()[1],
-                    ipv6.addr[1].to_le_bytes()[2],
-                    ipv6.addr[1].to_le_bytes()[3],
-                    ipv6.addr[2].to_le_bytes()[0],
-                    ipv6.addr[2].to_le_bytes()[1],
-                    ipv6.addr[2].to_le_bytes()[2],
-                    ipv6.addr[2].to_le_bytes()[3],
-                    ipv6.addr[3].to_le_bytes()[0],
-                    ipv6.addr[3].to_le_bytes()[1],
-                    ipv6.addr[3].to_le_bytes()[2],
-                    ipv6.addr[3].to_le_bytes()[3],
-                ]
-                .into()
-            } else {
-                Ipv6Addr::UNSPECIFIED
+            for raw in &raw[..count as usize] {
+                // `unwrap` cannot fail: `count <= LWIP_IPV6_NUM_ADDRESSES`
+                ipv6_addrs.push(esp_ip6_to_addr(raw)).unwrap();
             }
+
+            ipv6_addrs
         };
 
         let mut mac: [u8; 8] = Default::default();
@@ -311,10 +301,21 @@ pub mod utils {
             offprem_svc_reachable_ipv6: None,
             hw_addr: &mac,
             ipv4_addrs: &[ipv4],
-            ipv6_addrs: &[ipv6],
+            ipv6_addrs: &ipv6_addrs,
             netif_type,
             netif_index: netif.get_index(),
         })
+    }
+
+    /// Convert a raw lwIP `esp_ip6_addr_t` into a `core::net::Ipv6Addr`
+    fn esp_ip6_to_addr(raw: &esp_ip6_addr_t) -> Ipv6Addr {
+        let mut octets = [0u8; 16];
+
+        for (i, word) in raw.addr.iter().enumerate() {
+            octets[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+
+        octets.into()
     }
 
     pub fn info_is_operational(l2_connected: bool, info: &NetifInfo<'_>) -> bool {
