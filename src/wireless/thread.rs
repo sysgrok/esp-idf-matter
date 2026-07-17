@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 
+#[cfg(esp_idf_bt_bluedroid_enabled)]
 use esp_idf_svc::bt::{self, BtDriver};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::modem::Modem;
@@ -21,7 +22,9 @@ use crate::error::to_net_error;
 use crate::netif::{EspMatterNetStack, EspMatterNetif};
 use crate::thread::{EspMatterThreadCtl, EspMatterThreadSrp};
 
-use super::{EspWirelessMatterStack, GATTS_APP_ID};
+use super::EspWirelessMatterStack;
+#[cfg(esp_idf_bt_bluedroid_enabled)]
+use super::GATTS_APP_ID;
 
 extern crate alloc;
 
@@ -81,10 +84,17 @@ impl Gatt for EspMatterThread<'_, '_> {
     where
         A: GattTask,
     {
-        let bt = BtDriver::new(unsafe { self.modem.reborrow() }, Some(self.nvs.clone())).unwrap();
+        #[cfg(esp_idf_bt_bluedroid_enabled)]
+        let peripheral = {
+            let bt =
+                BtDriver::new(unsafe { self.modem.reborrow() }, Some(self.nvs.clone())).unwrap();
 
+            EspBtpGattPeripheral::<bt::Ble>::new(GATTS_APP_ID, bt, self.ble_context).unwrap()
+        };
+
+        #[cfg(not(esp_idf_bt_bluedroid_enabled))]
         let peripheral =
-            EspBtpGattPeripheral::<bt::Ble>::new(GATTS_APP_ID, bt, self.ble_context).unwrap();
+            EspBtpGattPeripheral::new(unsafe { self.modem.reborrow() }, self.ble_context).unwrap();
 
         task.run(peripheral).await
     }
@@ -167,10 +177,15 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
 
         let net_ctl = EspMatterThreadCtl::new(&thread, self.sysloop.clone());
         let mut mdns = EspMatterThreadSrp::new(&thread);
-        let bt = BtDriver::new(bt_p, Some(self.nvs.clone())).unwrap();
+        #[cfg(esp_idf_bt_bluedroid_enabled)]
+        let mut peripheral = {
+            let bt = BtDriver::new(bt_p, Some(self.nvs.clone())).unwrap();
 
-        let mut peripheral =
-            EspBtpGattPeripheral::<bt::Ble>::new(GATTS_APP_ID, bt, self.ble_context).unwrap();
+            EspBtpGattPeripheral::<bt::Ble>::new(GATTS_APP_ID, bt, self.ble_context).unwrap()
+        };
+
+        #[cfg(not(esp_idf_bt_bluedroid_enabled))]
+        let mut peripheral = EspBtpGattPeripheral::new(bt_p, self.ble_context).unwrap();
 
         task.run(
             EspMatterNetStack::new(),

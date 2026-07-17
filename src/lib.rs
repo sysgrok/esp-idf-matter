@@ -19,7 +19,7 @@ extern crate alloc;
 #[cfg(all(
     not(esp_idf_btdm_ctrl_mode_br_edr_only),
     esp_idf_bt_enabled,
-    esp_idf_bt_bluedroid_enabled,
+    any(esp_idf_bt_bluedroid_enabled, esp_idf_bt_nimble_enabled),
     not(esp32s2)
 ))]
 pub mod ble;
@@ -41,7 +41,7 @@ pub mod stack;
     esp_idf_comp_esp_event_enabled,
     not(esp_idf_btdm_ctrl_mode_br_edr_only),
     esp_idf_bt_enabled,
-    esp_idf_bt_bluedroid_enabled,
+    any(esp_idf_bt_bluedroid_enabled, esp_idf_bt_nimble_enabled),
 ))]
 pub mod thread;
 #[cfg(all(
@@ -51,7 +51,7 @@ pub mod thread;
     esp_idf_comp_esp_event_enabled,
     not(esp_idf_btdm_ctrl_mode_br_edr_only),
     esp_idf_bt_enabled,
-    esp_idf_bt_bluedroid_enabled,
+    any(esp_idf_bt_bluedroid_enabled, esp_idf_bt_nimble_enabled),
 ))]
 pub mod wifi;
 #[cfg(all(
@@ -59,7 +59,7 @@ pub mod wifi;
     esp_idf_comp_esp_event_enabled,
     not(esp_idf_btdm_ctrl_mode_br_edr_only),
     esp_idf_bt_enabled,
-    esp_idf_bt_bluedroid_enabled,
+    any(esp_idf_bt_bluedroid_enabled, esp_idf_bt_nimble_enabled),
 ))]
 pub mod wireless;
 

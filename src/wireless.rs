@@ -96,4 +96,6 @@ where
     }
 }
 
+/// The GATT application ID of the BTP service. A Bluedroid notion; NimBLE has no equivalent.
+#[cfg(esp_idf_bt_bluedroid_enabled)]
 const GATTS_APP_ID: u16 = 0;
