@@ -44,6 +44,7 @@ mod example {
     use esp_idf_matter::matter::{clusters, devices};
     use esp_idf_matter::wireless::{EspMatterThread, EspThreadMatterStack};
 
+    #[cfg(esp_idf_bt_bluedroid_enabled)]
     use esp_idf_svc::bt::reduce_bt_memory;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::hal::peripherals::Peripherals;
@@ -58,8 +59,8 @@ mod example {
 
     extern crate alloc;
 
-    const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
-    const BUMP_SIZE: usize = 17000;
+    const STACK_SIZE: usize = 20 * 1024;
+    const BUMP_SIZE: usize = 13000;
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
@@ -111,11 +112,39 @@ mod example {
         // Take some generic ESP-IDF stuff we'll need later
         let sysloop = EspSystemEventLoop::take()?;
         let nvs = EspDefaultNvsPartition::take()?;
+        // `mut` is only needed for `reduce_bt_memory`'s reborrow below, under Bluedroid.
+        #[cfg_attr(not(esp_idf_bt_bluedroid_enabled), allow(unused_mut))]
         let mut peripherals = Peripherals::take()?;
 
         let mounted_event_fs = Arc::new(MountedEventfs::mount(6)?);
         init_async_io(mounted_event_fs.clone())?;
 
+        // Periodically report free + total internal RAM, so the steady-state headroom (once
+        // rs-matter, OpenThread and the BLE host have all claimed their share) can be observed.
+        std::thread::Builder::new()
+            .stack_size(2048)
+            .spawn(|| loop {
+                use esp_idf_svc::sys::{
+                    heap_caps_get_info, multi_heap_info_t, MALLOC_CAP_INTERNAL,
+                };
+
+                let mut info: multi_heap_info_t = unsafe { core::mem::zeroed() };
+                unsafe { heap_caps_get_info(&mut info, MALLOC_CAP_INTERNAL) };
+                info!(
+                    "HEAP internal: free={} largest={} min_ever={} allocated={} (bytes)",
+                    info.total_free_bytes,
+                    info.largest_free_block,
+                    info.minimum_free_bytes,
+                    info.total_allocated_bytes,
+                );
+
+                std::thread::sleep(core::time::Duration::from_secs(5));
+            })
+            .unwrap();
+
+        // Frees the Classic-BT memory pool in BLE-only mode. Only available with the Bluedroid
+        // host; NimBLE (and the H2/C6, which have no Classic BT) have nothing to free here.
+        #[cfg(esp_idf_bt_bluedroid_enabled)]
         reduce_bt_memory(unsafe { peripherals.modem.reborrow() })?;
 
         info!("Basics initialized");

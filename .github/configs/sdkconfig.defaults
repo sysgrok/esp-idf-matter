@@ -8,9 +8,22 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 
 # BT
-CONFIG_BT_BTC_TASK_STACK_SIZE=8192
 CONFIG_BT_ENABLED=y
-CONFIG_BT_BLUEDROID_ENABLED=y
+
+# The Bluetooth host to build against - flip these two to switch.
+#
+# `esp-idf-matter` provides a BTP GATT peripheral for either host, and picks the matching
+# implementation off these options.
+#
+# NimBLE has a substantially smaller RAM footprint than Bluedroid, which is what allows BLE to
+# coexist with Thread on the RAM-constrained esp32h2 and esp32c6. Bluedroid additionally
+# supports BT Classic, which Matter does not use.
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+
+# --- Bluedroid; only in effect with `CONFIG_BT_BLUEDROID_ENABLED=y` ---
+
+CONFIG_BT_BTC_TASK_STACK_SIZE=8192
 CONFIG_BT_CLASSIC_ENABLED=n
 CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
 CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=n
@@ -20,15 +33,48 @@ CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
 CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=y
 
-# Chips are RAM-tight with Thread+BLE+Matter; commissioning BLE needs a fraction of the default pool
-CONFIG_BT_LE_ACL_BUF_COUNT=4          # 10 -> 4   (saves ~3.1 KiB)
-CONFIG_BT_LE_HCI_EVT_HI_BUF_COUNT=8   # 30 -> 8   (saves ~5.7 KiB)
-CONFIG_BT_LE_HCI_EVT_LO_BUF_COUNT=4   # 8 -> 4    (saves ~1.0 KiB)
-CONFIG_BT_LE_MAX_CONNECTIONS=1        # 3 -> 1    (fewer conn state machines; conn_rsv_cnt -> 1)
-CONFIG_BT_ACL_CONNECTIONS=1           # Bluedroid host: 4 -> 1
+# Chips are RAM-tight with Thread+BLE+Matter, and commissioning BLE needs only a fraction of
+# the default HCI transport pool. Counts below are trimmed from the defaults of 10 / 30 / 8,
+# which together reserve ~14.6 KiB.
+CONFIG_BT_LE_ACL_BUF_COUNT=4
+CONFIG_BT_LE_HCI_EVT_HI_BUF_COUNT=8
+CONFIG_BT_LE_HCI_EVT_LO_BUF_COUNT=4
+# Matter commissions over a single BLE link
+CONFIG_BT_LE_MAX_CONNECTIONS=1
+CONFIG_BT_ACL_CONNECTIONS=1
+
+# --- NimBLE; only in effect with `CONFIG_BT_NIMBLE_ENABLED=y` ---
+
+# Matter commissioning only ever needs a GATT server, advertised as a peripheral,
+# over a single connection.
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_GATT_CLIENT=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# BTP carries its own security on top of GATT, so BLE-level pairing and bonding are unused.
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+
+# None of NimBLE's bundled sample services are used by Matter.
+CONFIG_BT_NIMBLE_ANS_SERVICE=n
+CONFIG_BT_NIMBLE_BAS_SERVICE=n
+CONFIG_BT_NIMBLE_CTS_SERVICE=n
+CONFIG_BT_NIMBLE_DIS_SERVICE=n
+CONFIG_BT_NIMBLE_HR_SERVICE=n
+CONFIG_BT_NIMBLE_HTP_SERVICE=n
+CONFIG_BT_NIMBLE_IAS_SERVICE=n
+CONFIG_BT_NIMBLE_IPSS_SERVICE=n
+CONFIG_BT_NIMBLE_LLS_SERVICE=n
+CONFIG_BT_NIMBLE_PROX_SERVICE=n
+CONFIG_BT_NIMBLE_SPS_SERVICE=n
+CONFIG_BT_NIMBLE_TPS_SERVICE=n
 
 # Generic Thread functionality
 CONFIG_OPENTHREAD_ENABLED=y
+# No interactive OpenThread console on a Matter device (the driver never starts it)
+CONFIG_OPENTHREAD_CLI=n
 
 # Wifi/Thread + BLE coex
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

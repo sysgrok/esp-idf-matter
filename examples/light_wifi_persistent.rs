@@ -48,6 +48,7 @@ mod example {
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::wireless::{EspMatterWifi, EspWifiMatterStack};
 
+    #[cfg(esp_idf_bt_bluedroid_enabled)]
     use esp_idf_svc::bt::reduce_bt_memory;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::hal::gpio::{Input, PinDriver, Pull};
@@ -118,11 +119,14 @@ mod example {
         let sysloop = EspSystemEventLoop::take()?;
         let timers = EspTaskTimerService::new()?;
         let nvs = EspDefaultNvsPartition::take()?;
-        let mut peripherals = Peripherals::take()?;
+        let peripherals = Peripherals::take()?;
 
         let mounted_event_fs = Arc::new(MountedEventfs::mount(3)?);
         init_async_io(mounted_event_fs.clone())?;
 
+        // Frees the Classic-BT memory pool in BLE-only mode. Only available with the Bluedroid
+        // host; NimBLE (and the H2/C6, which have no Classic BT) have nothing to free here.
+        #[cfg(esp_idf_bt_bluedroid_enabled)]
         reduce_bt_memory(unsafe { peripherals.modem.reborrow() })?;
 
         // Create the default crypto provider using the STD CSPRNG provided by the `rand` crate
