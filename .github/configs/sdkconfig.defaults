@@ -45,14 +45,16 @@ CONFIG_BT_ACL_CONNECTIONS=1
 
 # --- NimBLE; only in effect with `CONFIG_BT_NIMBLE_ENABLED=y` ---
 
-# Matter commissioning only ever needs a GATT server, advertised as a peripheral,
-# over a single connection.
+# The Matter accessory role needs a GATT server advertised as a peripheral. The Commissioner role
+# (`EspBtpGattClient`) additionally needs the central role + GATT client - set both to `y` to build
+# it (it also needs an rs-matter with `Btp::set_initiator`; see the note in `Cargo.toml`).
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_GATT_CLIENT=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 
 # BTP carries its own security on top of GATT, so BLE-level pairing and bonding are unused.
 CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
