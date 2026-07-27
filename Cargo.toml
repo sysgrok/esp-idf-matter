@@ -27,6 +27,11 @@ opt-level = "s"
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
 esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
+# NOTE: the `EspBtpGattClient` central role needs `Btp::set_initiator`, newer than the published
+# rs-matter 0.2. rs-matter `main` has it, but its other breaking changes (the `time_sync::TimeSync`
+# removal, the `InteractionModel` signature) outrun the current rs-matter-stack, so it can't be used
+# yet. Re-enable once rs-matter-stack is ported to that rs-matter:
+# rs-matter = { git = "https://github.com/project-chip/rs-matter" }
 
 [features]
 default = ["async-io-mini", "rustcrypto"]
@@ -212,7 +217,6 @@ examples = [
     "default", 
     "esp-idf-svc/binstart", 
     "esp-idf-svc/critical-section",
-    "max-fabrics-2",
 ]
 
 [dependencies]
