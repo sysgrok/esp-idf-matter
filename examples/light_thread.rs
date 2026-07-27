@@ -147,8 +147,6 @@ mod example {
         #[cfg(esp_idf_bt_bluedroid_enabled)]
         reduce_bt_memory(unsafe { peripherals.modem.reborrow() })?;
 
-        info!("Basics initialized");
-
         // Create the default crypto provider using the STD CSPRNG provided by the `rand` crate
         let crypto = default_crypto(rand::thread_rng(), DAC_PRIVKEY);
 
@@ -179,8 +177,6 @@ mod example {
                 EpClMatcher::new(Some(LIGHT_ENDPOINT_ID), Some(DescHandler::CLUSTER.id)),
                 Async(desc::DescHandler::new(Dataver::new_rand(&mut weak_rand)).adapt()),
             );
-
-        info!("Handler initialized");
 
         // Create a KV BLOB store and load any previously saved state of `rs-matter`
         // `EspKvBlobStore` saves to an ESP-IDF NVS namespace
