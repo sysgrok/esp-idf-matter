@@ -38,6 +38,7 @@ pub struct EspMatterThread<'a, 'd> {
     nvs: EspDefaultNvsPartition,
     mounted_event_fs: Arc<MountedEventfs>,
     ble_context: &'a EspBtpGattContext,
+    srp_host_eui64: Option<[u8; 8]>,
 }
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
@@ -75,7 +76,28 @@ impl<'a, 'd> EspMatterThread<'a, 'd> {
             nvs,
             mounted_event_fs,
             ble_context,
+            srp_host_eui64: None,
         }
+    }
+
+    /// Derive the Thread SRP host name from `eui64` rather than from the
+    /// factory-programmed IEEE 802.15.4 address.
+    ///
+    /// A production device should keep the default: the SRP host name is meant to be
+    /// stable, and its records on the SRP server are keyed by an ECDSA key that
+    /// OpenThread persists alongside its other settings.
+    ///
+    /// Examples and demos are the exception. Erasing the flash discards that ECDSA key,
+    /// but the SRP server keeps the records the device registered under the old key
+    /// until their key lease runs out - 14 days, by default. Until then the server
+    /// answers every re-registration attempt under the same host name with `YXDOMAIN`
+    /// ("name exists"), and the device stays undiscoverable. Passing a freshly randomized
+    /// EUI-64 on each boot side-steps that, at the cost of leaving one dead host record
+    /// behind on the server per run.
+    pub fn with_srp_host_eui64(mut self, eui64: [u8; 8]) -> Self {
+        self.srp_host_eui64 = Some(eui64);
+
+        self
     }
 }
 
@@ -123,8 +145,19 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
         )
         .map_err(to_net_error)?;
 
+        // Drop any Active Operational Dataset ESP-IDF persisted in NVS on a previous run.
+        //
+        // The Matter stack is the only source of the dataset - `NetCtl::connect` always
+        // supplies it from `rs-matter`'s own network store - so OpenThread's copy is never
+        // read, but it does keep the radio holding credentials for a network the Matter
+        // stack may no longer know anything about. Enabling IPv6 below then brings up the
+        // Thread netif (and with it the MLE socket) while Thread itself stays disabled
+        // until `connect()`, so those stale credentials would let the neighbours' MLE
+        // traffic through the MAC filter only for MLE to reject every message.
+        thread.set_tod(&[]).map_err(to_net_error)?;
+
         thread.enable_ipv6(true).map_err(to_net_error)?;
-        thread.enable_thread(true).map_err(to_net_error)?;
+        thread.srp_autostart().map_err(to_net_error)?;
 
         info!("Thread stack created, about to start it");
 
@@ -132,8 +165,12 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
 
         info!("Thread stack started");
 
+        // Declared before everything that borrows `thread`, so that it is dropped
+        // *after* them - and after the task future itself - on either exit path
+        let _quiesce = ThreadQuiesce(&thread);
+
         let net_ctl = EspMatterThreadCtl::new(&thread, self.sysloop.clone());
-        let mut mdns = EspMatterThreadSrp::new(&thread);
+        let mut mdns = EspMatterThreadSrp::new_with_host_eui64(&thread, self.srp_host_eui64);
 
         task.run(
             EspMatterNetStack::new(),
@@ -166,8 +203,19 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
         )
         .map_err(to_net_error)?;
 
+        // Drop any Active Operational Dataset ESP-IDF persisted in NVS on a previous run.
+        //
+        // The Matter stack is the only source of the dataset - `NetCtl::connect` always
+        // supplies it from `rs-matter`'s own network store - so OpenThread's copy is never
+        // read, but it does keep the radio holding credentials for a network the Matter
+        // stack may no longer know anything about. Enabling IPv6 below then brings up the
+        // Thread netif (and with it the MLE socket) while Thread itself stays disabled
+        // until `connect()`, so those stale credentials would let the neighbours' MLE
+        // traffic through the MAC filter only for MLE to reject every message.
+        thread.set_tod(&[]).map_err(to_net_error)?;
+
         thread.enable_ipv6(true).map_err(to_net_error)?;
-        thread.enable_thread(true).map_err(to_net_error)?;
+        thread.srp_autostart().map_err(to_net_error)?;
 
         info!("Thread stack created, about to start it");
 
@@ -175,8 +223,12 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
 
         info!("Thread stack started");
 
+        // Declared before everything that borrows `thread`, so that it is dropped
+        // *after* them - and after the task future itself - on either exit path
+        let _quiesce = ThreadQuiesce(&thread);
+
         let net_ctl = EspMatterThreadCtl::new(&thread, self.sysloop.clone());
-        let mut mdns = EspMatterThreadSrp::new(&thread);
+        let mut mdns = EspMatterThreadSrp::new_with_host_eui64(&thread, self.srp_host_eui64);
         #[cfg(esp_idf_bt_bluedroid_enabled)]
         let mut peripheral = {
             let bt = BtDriver::new(bt_p, Some(self.nvs.clone())).unwrap();
@@ -195,5 +247,24 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
             &mut peripheral,
         )
         .await
+    }
+}
+
+/// Puts the Thread stack back to rest when the driver task ends.
+///
+/// This has to be a drop guard rather than code following the `await`: the driver task
+/// is raced against other futures, so the overwhelmingly common way for it to end is to
+/// be dropped (cancelled) rather than to return.
+///
+/// Bind it *before* anything that borrows the `EspThread` (and hence before the task
+/// future is created), so that drop order tears the task down first and only then
+/// quiesces the radio.
+struct ThreadQuiesce<'a, 'd>(&'a EspThread<'d, Node>);
+
+impl Drop for ThreadQuiesce<'_, '_> {
+    fn drop(&mut self) {
+        let _ = self.0.enable_thread(false);
+        let _ = self.0.srp_stop();
+        let _ = self.0.enable_ipv6(false);
     }
 }

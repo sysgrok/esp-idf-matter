@@ -77,6 +77,22 @@ CONFIG_BT_NIMBLE_TPS_SERVICE=n
 CONFIG_OPENTHREAD_ENABLED=y
 # No interactive OpenThread console on a Matter device (the driver never starts it)
 CONFIG_OPENTHREAD_CLI=n
+# MANDATORY:
+# Route IPv6 source-address selection on the Thread netif through OpenThread's own
+# `otIp6SelectSourceAddress()`. The ESP-IDF OpenThread component implements the
+# `lwip_hook_ip6_select_source_address` hook, but lwIP only calls it when this option
+# selects a custom implementation - the default (`..._NONE`) leaves that hook dead code and
+# lets lwIP pick a source address with no knowledge of Thread's address roles.
+CONFIG_LWIP_HOOK_IP6_SELECT_SRC_ADDR_CUSTOM=y
+# Optional:
+# The default of 3 is exactly what a Thread node already consumes - link-local, mesh-local
+# EID and one OMR address - leaving no room for a second on-mesh prefix in case the BR has one.
+CONFIG_LWIP_IPV6_NUM_ADDRESSES=6
+# Optional:
+# Answer pings sent to multicast addresses - e.g. to probe a Thread node from off-mesh - `ping6 ff02::1`.
+#CONFIG_LWIP_MULTICAST_PING=y
+# Just in case
+#CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
 
 # Wifi/Thread + BLE coex
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

@@ -205,8 +205,13 @@ impl NetifInfoOwned {
         let ipv4_addr = utils::info_ipv4_addr(info);
         let ipv6_addr = utils::info_ipv6_addr(info);
 
+        // An interface counts as operational only if the L2 protocol is connected too.
+        // (An ESP netif stays "up" while - say - Thread is detached or Wifi is
+        // disconnected, so `info.operational` alone is not enough.)
+        let operational = info.operational && l2_connected;
+
         let changed = self.name != info.name
-            || self.operational != info.operational && l2_connected
+            || self.operational != operational
             || self.hw_addr != hw_addr
             || self.ipv4_addr != ipv4_addr
             || self.ipv6_addr != ipv6_addr
@@ -215,7 +220,7 @@ impl NetifInfoOwned {
 
         if changed {
             self.name = info.name.try_into().unwrap();
-            self.operational = info.operational && l2_connected;
+            self.operational = operational;
             self.hw_addr = hw_addr.try_into().unwrap();
             self.ipv4_addr = ipv4_addr;
             self.ipv6_addr = ipv6_addr;
@@ -245,7 +250,8 @@ pub mod utils {
     use esp_idf_svc::handle::RawHandle;
     use esp_idf_svc::netif::{EspNetif, IpEvent};
     use esp_idf_svc::sys::{
-        esp_ip6_addr_t, esp_netif_get_all_ip6, EspError, LWIP_IPV6_NUM_ADDRESSES,
+        esp_ip6_addr_t, esp_netif_get_all_ip6, esp_netif_get_all_preferred_ip6, EspError,
+        LWIP_IPV6_NUM_ADDRESSES,
     };
 
     use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifInfo};
@@ -266,22 +272,43 @@ pub mod utils {
 
         let ipv4: Ipv4Addr = ip_info.ip.octets().into();
 
-        // Collect *all* of the netif's IPv6 addresses. We must not keep only one
-        // (e.g. the last) here: the downstream consumer (`info_ipv6_addr`) filters
-        // this list for the link-local `fe80::` address, and on Wifi the netif
-        // typically also has a global/ULA SLAAC address. If only a single address
-        // were passed and it happened to be the global one, the link-local filter
-        // would find nothing and the interface would never be reported operational.
+        // Collect *all* of the netif's IPv6 addresses, the preferred ones first.
+        //
+        // We must not keep only one (e.g. the last) here: the downstream consumer
+        // (`info_ipv6_addr`) filters this list, and on Wifi the netif typically has both
+        // a link-local and a global/ULA SLAAC address. If only a single address were
+        // passed and it happened to be the global one, the link-local filter would find
+        // nothing and the interface would never be reported operational.
+        //
+        // Ordering the preferred addresses first is what lets `info_ipv6_addr` single out
+        // a routable address on Thread. ESP-IDF's OpenThread netif glue deliberately marks
+        // link-local and mesh-local addresses as deprecated and everything else (i.e. the
+        // OMR address a border router hands out) as preferred, so "preferred" is exactly
+        // the "reachable from off-mesh" set - the same set OpenThread itself registers as
+        // the SRP host's AAAA records.
         let ipv6_addrs = {
             let mut raw: [esp_ip6_addr_t; LWIP_IPV6_NUM_ADDRESSES as usize] = Default::default();
-            let count = unsafe { esp_netif_get_all_ip6(netif.handle() as _, raw.as_mut_ptr()) };
 
             let mut ipv6_addrs =
                 heapless::Vec::<Ipv6Addr, { LWIP_IPV6_NUM_ADDRESSES as usize }>::new();
 
+            let count =
+                unsafe { esp_netif_get_all_preferred_ip6(netif.handle() as _, raw.as_mut_ptr()) };
+
             for raw in &raw[..count as usize] {
                 // `unwrap` cannot fail: `count <= LWIP_IPV6_NUM_ADDRESSES`
                 ipv6_addrs.push(esp_ip6_to_addr(raw)).unwrap();
+            }
+
+            let count = unsafe { esp_netif_get_all_ip6(netif.handle() as _, raw.as_mut_ptr()) };
+
+            for raw in &raw[..count as usize] {
+                let addr = esp_ip6_to_addr(raw);
+
+                if !ipv6_addrs.contains(&addr) {
+                    // `unwrap` cannot fail: the preferred addresses are a subset of all of them
+                    ipv6_addrs.push(addr).unwrap();
+                }
             }
 
             ipv6_addrs
@@ -357,11 +384,22 @@ pub mod utils {
 
     pub(crate) fn info_ipv6_addr(info: &NetifInfo<'_>) -> Ipv6Addr {
         let ipv6_addr = if matches!(info.netif_type, InterfaceTypeEnum::Thread) {
-            // For Thread: return the first Ipv6 address
-            // Does not really matter what is returned, as the Ipv6 Thread address
-            // returned here is FYI only, and is not used for opening the Matter stack
-            // or for mDNS-over-Thread (SRP)
-            info.ipv6_addrs.first()
+            // For Thread: the first non-link-local address. Since `get_netif_conf` orders
+            // the preferred addresses first, this is the OMR address whenever a border
+            // router has advertised an on-mesh prefix, and the mesh-local EID otherwise.
+            //
+            // Neither the link-local nor the mesh-local address is reachable from outside
+            // the Thread mesh, so neither is a meaningful thing to report as "the" address
+            // of the interface. Beyond that, the Matter stack keys the (re)start of the
+            // mDNS publisher off the netif state this address is part of, and both of the
+            // other two are poor change signals: the link-local address is derived from the
+            // IEEE 802.15.4 extended address and so is identical across Thread networks,
+            // while latching onto the mesh-local EID would hide the moment the routable OMR
+            // address appears - which is exactly when the SRP records want re-publishing.
+            info.ipv6_addrs
+                .iter()
+                .find(|ipv6| !ipv6.is_unicast_link_local())
+                .or_else(|| info.ipv6_addrs.first())
         } else {
             // For Wifi: locate the link-local Ipv6 address
             info.ipv6_addrs

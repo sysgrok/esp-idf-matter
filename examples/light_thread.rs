@@ -55,6 +55,8 @@ mod example {
 
     use log::{error, info};
 
+    use rand::RngCore;
+
     use static_cell::StaticCell;
 
     extern crate alloc;
@@ -187,11 +189,22 @@ mod example {
         // Wrap the KV BLOB store as a shared reference, so that it can be used both by `rs-matter` and the user
         let kv = stack.kv(store);
 
+        // Randomize the EUI-64 the Thread SRP host name is derived from, on every boot.
+        //
+        // This is a demo-only thing to do - a real device must keep the stable,
+        // factory-programmed one. But this example deliberately starts uncommissioned every
+        // time, and re-flashing it discards the ECDSA key OpenThread signs its SRP
+        // registrations with. The SRP server would then reject the (identical) host name
+        // for as long as the records from the previous key live on - up to 14 days.
+        let mut srp_host_eui64 = [0; 8];
+        weak_rand.fill_bytes(&mut srp_host_eui64);
+
         // Run the Matter stack with our handler
         // Using `pin!` is completely optional, but reduces the size of the final future
         let matter = pin!(stack.run_coex(
             // The Matter stack needs the Thread/BLE modem peripheral
-            EspMatterThread::new(peripherals.modem, sysloop, nvs, mounted_event_fs, stack),
+            EspMatterThread::new(peripherals.modem, sysloop, nvs, mounted_event_fs, stack)
+                .with_srp_host_eui64(srp_host_eui64),
             // The crypto provider
             &crypto,
             // Our `AsyncHandler` + `AsyncMetadata` impl

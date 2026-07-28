@@ -21,7 +21,7 @@ use esp_idf_svc::thread::{
     ActiveScanResult, EspThread, NetifMode, Role, SrpConf, SrpService, SrpServiceSlot,
 };
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use rs_matter_stack::matter::crypto::Crypto;
 use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
@@ -218,7 +218,15 @@ where
 
         let thread = self.thread.lock().await;
 
+        // Apply the new dataset with Thread stopped and only then bring it back up.
+        // Swapping the Active Operational Dataset underneath an attached stack leaves
+        // OpenThread re-attaching to the *old* partition for a while, and the SRP
+        // client bound to the old network's server.
+        let _ = thread.enable_thread(false);
+
         thread.set_tod(dataset_tlv).map_err(to_net_constr_error)?;
+
+        thread.enable_thread(true).map_err(to_net_error)?;
 
         let connect_attempt_time = embassy_time::Instant::now();
 
@@ -251,7 +259,12 @@ where
 
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // Don't leave the stack churning on a network we failed to join
+                let _ = thread.enable_thread(false);
+
+                Err(e)
+            }
         }
     }
 }
@@ -421,6 +434,7 @@ where
     M: NetifMode,
 {
     thread: &'a EspThread<'d, M>,
+    host_eui64: Option<[u8; 8]>,
     services: Vec<(MatterLocalService, SrpServiceSlot), MAX_MATTER_SERVICES>,
     mdns_buf: Vec<u8, OT_MDNS_BUF_SZ>,
 }
@@ -429,19 +443,44 @@ impl<'a, 'd, M> EspMatterThreadSrp<'a, 'd, M>
 where
     M: NetifMode,
 {
-    /// Create a new instance of the `EspMatterThreadSrp` type.
+    /// Create a new instance of the `EspMatterThreadSrp` type,
+    /// deriving the SRP host name from the factory-programmed IEEE 802.15.4 address.
     pub fn new(thread: &'a EspThread<'d, M>) -> Self {
+        Self::new_with_host_eui64(thread, None)
+    }
+
+    /// Create a new instance of the `EspMatterThreadSrp` type.
+    ///
+    /// # Arguments
+    /// - `host_eui64`: The EUI-64 to derive the SRP host name from, or `None` to use the
+    ///   factory-programmed IEEE 802.15.4 address (see [`EspMatterThreadSrp::new`]).
+    pub fn new_with_host_eui64(thread: &'a EspThread<'d, M>, host_eui64: Option<[u8; 8]>) -> Self {
         Self {
             thread,
+            host_eui64,
             services: Vec::new(),
             mdns_buf: Vec::new(),
         }
     }
 
-    /// Create a new instance of the `EspMatterThreadSrp` type.
+    /// Create a new instance of the `EspMatterThreadSrp` type,
+    /// deriving the SRP host name from the factory-programmed IEEE 802.15.4 address.
     pub fn init(thread: &'a EspThread<'d, M>) -> impl Init<Self> {
+        Self::init_with_host_eui64(thread, None)
+    }
+
+    /// Create a new instance of the `EspMatterThreadSrp` type.
+    ///
+    /// # Arguments
+    /// - `host_eui64`: The EUI-64 to derive the SRP host name from, or `None` to use the
+    ///   factory-programmed IEEE 802.15.4 address (see [`EspMatterThreadSrp::init`]).
+    pub fn init_with_host_eui64(
+        thread: &'a EspThread<'d, M>,
+        host_eui64: Option<[u8; 8]>,
+    ) -> impl Init<Self> {
         init!(Self {
             thread,
+            host_eui64,
             services <- Vec::init(),
             mdns_buf <- Vec::init(),
         })
@@ -452,9 +491,18 @@ where
         matter: &Matter<'_>,
         _ipv6: core::net::Ipv6Addr,
     ) -> Result<(), Error> {
-        let mut ieee_eui64 = [0; 8];
-        esp!(unsafe { esp_read_mac(ieee_eui64.as_mut_ptr(), esp_mac_type_t_ESP_MAC_IEEE802154) })
-            .map_err(to_net_error)?;
+        let ieee_eui64 = match self.host_eui64 {
+            Some(eui64) => eui64,
+            None => {
+                let mut eui64 = [0; 8];
+                esp!(unsafe {
+                    esp_read_mac(eui64.as_mut_ptr(), esp_mac_type_t_ESP_MAC_IEEE802154)
+                })
+                .map_err(to_net_error)?;
+
+                eui64
+            }
+        };
 
         let mut hostname = heapless::String::<16>::new();
         write!(
@@ -471,41 +519,32 @@ where
         )
         .unwrap();
 
-        let register_host = self
-            .thread
-            .srp_conf(|conf, _, free| {
-                let register = if free {
-                    info!("No hostname registered, setting SRP hostname to '{hostname}'");
+        // This method is (re)started by the Matter stack every time the Thread netif
+        // changes, which includes the device moving to a *different* Thread network
+        // (i.e. a new Operational Dataset applied during commissioning). The SRP
+        // server of the new network knows nothing about what was registered before,
+        // so start from a clean slate and re-register the host and all services.
+        //
+        // The reset is an *immediate* clear rather than a graceful, server-side
+        // removal: a graceful removal only completes once the server acks the host
+        // into the `Removed` state, which never happens for records registered with a
+        // different server (or with no server at all). Re-registering with the same
+        // (persisted) ECDSA key overwrites whatever a previous registration left on
+        // the server; records on servers we are no longer talking to expire by lease.
+        self.thread.srp_remove_all(true).map_err(to_net_error)?;
+        self.services.clear();
 
-                    true
-                } else if conf.host_name != hostname.as_str() {
-                    info!(
-                        "Different hostname registered ('{}'), updating to '{hostname}'",
-                        conf.host_name
-                    );
-
-                    true
-                } else {
-                    false
-                };
-
-                Ok(register)
+        self.thread
+            .srp_set_conf(&SrpConf {
+                host_name: &hostname,
+                host_addrs: &[],
+                ..Default::default()
             })
             .map_err(to_net_error)?;
 
-        if register_host {
-            self.thread
-                .srp_set_conf(&SrpConf {
-                    host_name: &hostname,
-                    host_addrs: &[],
-                    ..Default::default()
-                })
-                .map_err(to_net_error)?;
-        }
+        info!("SRP hostname set to '{hostname}'");
 
         loop {
-            matter.transport().wait_mdns().await;
-
             let mut services = Vec::<_, MAX_MATTER_SERVICES>::new();
             matter.mdns_services(|service| {
                 if services.push(service).is_err() {
@@ -522,6 +561,10 @@ where
             self.update_services(matter, &services)?;
 
             info!("mDNS services updated");
+
+            self.log_srp_state();
+
+            matter.transport().wait_mdns().await;
         }
     }
 
@@ -530,31 +573,53 @@ where
         matter: &Matter,
         services: &[MatterLocalService],
     ) -> Result<(), Error> {
-        for service in services {
-            if !self.services.iter().any(|(s, _)| s == service) {
-                info!("Registering mDNS service: {service:?}");
-                let slot = self.register(matter, service)?;
-                if self.services.push((service.clone(), slot)).is_err() {
-                    error!("Too many mDNS services registered, max is {MAX_MATTER_SERVICES}");
+        // Nothing to do unless the set actually changed
+        if services.len() == self.services.len()
+            && services
+                .iter()
+                .all(|service| self.services.iter().any(|(s, _)| s == service))
+        {
+            return Ok(());
+        }
 
-                    Err(ErrorCode::ConstraintError)?;
-                }
+        // Re-register *every* service that should stay published, together with the
+        // removals, so that all of it goes out as a single, self-contained SRP update.
+        //
+        // OpenThread's SRP client would otherwise send a partial update - the removals
+        // only - because it relies on the server merging back the services the update did
+        // not mention. Its own SRP server does exactly that, but a border router is free
+        // to read an SRP update as the complete description of that host's services and
+        // republish accordingly, which withdraws every record the update left out. The
+        // client keeps reporting those records as `Registered` while they are no longer
+        // discoverable, so the node silently goes unreachable.
+        let mut registered = Vec::<_, MAX_MATTER_SERVICES>::new();
+        for entry in &self.services {
+            // `unwrap` cannot fail: same capacity, and we are draining `self.services`
+            registered.push(entry.clone()).unwrap();
+        }
+
+        self.services.clear();
+
+        for (service, slot) in &registered {
+            if services.contains(service) {
+                // Drop the local registration only - re-added below, into the same update
+                self.thread
+                    .srp_remove_service(*slot, true)
+                    .map_err(to_net_error)?;
+            } else {
+                info!("Deregistering mDNS service: {service:?}");
+                self.deregister(*slot)?;
             }
         }
 
-        loop {
-            let removed = self
-                .services
-                .iter()
-                .find(|(service, _)| !services.contains(service))
-                .map(|(service, slot)| (service.clone(), *slot));
+        for service in services {
+            info!("Registering mDNS service: {service:?}");
 
-            if let Some((service, slot)) = removed {
-                info!("Deregistering mDNS service: {service:?}");
-                self.deregister(slot)?;
-                self.services.retain(|(_, s)| *s != slot);
-            } else {
-                break;
+            let slot = self.register(matter, service)?;
+            if self.services.push((service.clone(), slot)).is_err() {
+                error!("Too many mDNS services registered, max is {MAX_MATTER_SERVICES}");
+
+                Err(ErrorCode::ConstraintError)?;
             }
         }
 
@@ -599,6 +664,29 @@ where
             .map_err(to_net_error)?;
 
         Ok(())
+    }
+
+    /// Log what the SRP client itself believes about the host and each registered service.
+    fn log_srp_state(&self) {
+        let running = self.thread.srp_running().unwrap_or(false);
+
+        let _ = self.thread.srp_conf(|conf, state, _| {
+            debug!(
+                "SRP state: client running={running}, host '{}' is {state}",
+                conf.host_name
+            );
+
+            Ok(())
+        });
+
+        let _ = self.thread.srp_services(|service| {
+            if let Some((service, state, slot)) = service {
+                debug!(
+                    "SRP state: slot {slot}: '{}' / '{}' is {state}",
+                    service.instance_name, service.name
+                );
+            }
+        });
     }
 }
 
