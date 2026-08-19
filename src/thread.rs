@@ -633,7 +633,7 @@ where
     ) -> Result<SrpServiceSlot, Error> {
         self.mdns_buf.resize_default(OT_MDNS_BUF_SZ).unwrap();
 
-        let (service, _) = service.service(matter.dev_det(), matter.port(), &mut self.mdns_buf)?;
+        let (service, _) = service.service(matter, &mut self.mdns_buf)?;
         let service = core::mem::ManuallyDrop::new(service);
 
         // TODO:

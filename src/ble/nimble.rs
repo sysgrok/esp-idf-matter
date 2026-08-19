@@ -658,7 +658,7 @@ mod central {
 
     use esp_idf_svc::ble::gap::GapEvent;
     use esp_idf_svc::ble::gatt::client::GattcEvent;
-    use esp_idf_svc::ble::{ensure_addr, BleAddr, BleDriver, BleSecurity, HostEvent};
+    use esp_idf_svc::ble::{ensure_addr, BleAddr, BleDriver, HostEvent};
     use esp_idf_svc::hal::modem::BluetoothModemPeripheral;
     use esp_idf_svc::sys::{EspError, BLE_OWN_ADDR_PUBLIC};
 
@@ -1033,15 +1033,15 @@ mod central {
                     } => {
                         let c2_val = context.state.lock(|s| s.borrow().c2_val);
                         if Some(attr_handle) == c2_val {
-                            let _ = context.state.lock(|s| {
+                            context.state.lock(|s| {
                                 let mut s = s.borrow_mut();
-                                if s.in_data.is_empty() {
-                                    if s.in_data.resize_default(MAX_MTU_SIZE).is_ok() {
-                                        if let Ok(len) = data.read(&mut s.in_data) {
-                                            s.in_data.truncate(len);
-                                        } else {
-                                            s.in_data.clear();
-                                        }
+                                if s.in_data.is_empty()
+                                    && s.in_data.resize_default(MAX_MTU_SIZE).is_ok()
+                                {
+                                    if let Ok(len) = data.read(&mut s.in_data) {
+                                        s.in_data.truncate(len);
+                                    } else {
+                                        s.in_data.clear();
                                     }
                                 }
                             });
