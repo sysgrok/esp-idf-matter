@@ -164,7 +164,7 @@ mod example {
         let mut store = EspKvBlobStore::new_default(nvs.clone())?;
         stack.startup(&crypto, &mut store).await?;
 
-        if stack.is_commissioned() {
+        if stack.matter().has_fabrics() {
             info!(
                 "To reset, press and hold the Boot Mode pin (GPIO9) for {} or more seconds",
                 RESET_SECS
@@ -189,7 +189,7 @@ mod example {
                 // The crypto provider
                 &crypto,
                 // Our `AsyncHandler` + `AsyncMetadata` impl
-                (NODE, handler),
+                (NODE, &handler),
                 // The Matter stack needs a blob store to store its state
                 kv,
                 // No user future to run
@@ -209,7 +209,11 @@ mod example {
         // by holding the BOOT pin low 3 or more seconds
         warn!("Resetting storage");
 
-        stack.reset(store).await?;
+        // Factory-reset both halves of the persisted state: the `Matter` one (fabrics, basic
+        // info, RTC, sessions) and the Interaction Model one (events watermark, plus the Wifi
+        // credentials held in the networks store). The handler is passed along so cluster
+        // handlers owning persisted state of their own get the `FactoryReset` lifecycle op.
+        stack.reset(&crypto, (NODE, &handler), store).await?;
 
         warn!("Rebooting...");
 
