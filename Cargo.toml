@@ -24,8 +24,10 @@ debug = true
 opt-level = "s"
 
 [patch.crates-io]
-#rs-matter = { git = "https://github.com/project-chip/rs-matter" }
+rs-matter = { git = "https://github.com/project-chip/rs-matter" }
 #rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
+rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "extra-flex" }
+#rs-matter-stack = { path = "../rs-matter-stack" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
 esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
@@ -252,7 +254,7 @@ embuild = "0.33"
 embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 static_cell = "2.1"
 anyhow = "1"
-rand = "0.8"
+rand = "0.10"
 
 [[example]]
 name = "light_wifi"
