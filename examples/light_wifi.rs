@@ -38,7 +38,8 @@ mod example {
         DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET,
     };
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
-    use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, EpClMatcher, Node};
+    use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
+    use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
     use esp_idf_matter::matter::persist::DummyKvBlobStore;
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
     use esp_idf_matter::matter::{clusters, devices};
@@ -123,7 +124,7 @@ mod example {
         reduce_bt_memory(unsafe { peripherals.modem.reborrow() })?;
 
         // Create the default crypto provider using the STD CSPRNG provided by the `rand` crate
-        let crypto = default_crypto(rand::thread_rng(), DAC_PRIVKEY);
+        let crypto = default_crypto(rand::rng(), DAC_PRIVKEY);
 
         let mut weak_rand = crypto.weak_rand()?;
 
@@ -138,18 +139,27 @@ mod example {
         // Chain our endpoint clusters with the
         // (root) Endpoint 0 system clusters in the final handler
         let handler = EmptyHandler
+            // The Endpoint 0 system clusters that are ours to provide.
+            // The stack adds the operational network clusters (Network Commissioning,
+            // General Commissioning, General Diagnostics and Wifi/Thread/Ethernet
+            // Diagnostics) on top, because only it knows the network driver state.
+            // Chain any extra Endpoint 0 clusters of your own the same way.
+            .chain(
+                |e, _| e == ROOT_ENDPOINT_ID,
+                Async(EspWifiMatterStack::<0, ()>::root_handler(
+                    &(),
+                    &mut weak_rand,
+                )),
+            )
             // Our on-off cluster, on Endpoint 1
             .chain(
-                EpClMatcher::new(
-                    Some(LIGHT_ENDPOINT_ID),
-                    Some(TestOnOffDeviceLogic::CLUSTER.id),
-                ),
+                |e, c| e == LIGHT_ENDPOINT_ID && c == TestOnOffDeviceLogic::CLUSTER.id,
                 on_off::HandlerAsyncAdaptor(&on_off),
             )
             // Each Endpoint needs a Descriptor cluster too
             // Just use the one that `rs-matter` provides out of the box
             .chain(
-                EpClMatcher::new(Some(LIGHT_ENDPOINT_ID), Some(DescHandler::CLUSTER.id)),
+                |e, c| e == LIGHT_ENDPOINT_ID && c == DescHandler::CLUSTER.id,
                 Async(desc::DescHandler::new(Dataver::new_rand(&mut weak_rand)).adapt()),
             );
 

@@ -489,7 +489,7 @@ where
     pub async fn run(
         &mut self,
         matter: &Matter<'_>,
-        _ipv6: core::net::Ipv6Addr,
+        _ipv6: &[core::net::Ipv6Addr],
     ) -> Result<(), Error> {
         let ieee_eui64 = match self.host_eui64 {
             Some(eui64) => eui64,
@@ -701,7 +701,7 @@ where
         _udp: U,
         _mac: &[u8],
         _ipv4: core::net::Ipv4Addr,
-        ipv6: core::net::Ipv6Addr,
+        ipv6: &[core::net::Ipv6Addr],
         _interface: u32,
     ) -> Result<(), Error>
     where
