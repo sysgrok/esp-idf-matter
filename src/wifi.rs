@@ -5,10 +5,7 @@ use core::time::Duration;
 
 extern crate alloc;
 
-// `EspRawMutex` (from `esp-idf-hal`) implements embassy-sync 0.7's `RawMutex`,
-// so the embassy-sync `Mutex`es parameterized with it must come from 0.7 too.
-use embassy_sync_07 as embassy_sync;
-
+use embassy_sync;
 use embassy_sync::blocking_mutex;
 use embassy_sync::mutex::Mutex;
 

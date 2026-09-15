@@ -5,11 +5,7 @@ use core::borrow::Borrow;
 use core::future::Future;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-// `EspRawMutex` (from `esp-idf-hal`) implements embassy-sync 0.7's `RawMutex`,
-// so the embassy-sync `Mutex` parameterized with it must come from 0.7 too.
-use embassy_sync_07 as embassy_sync;
-
-use embassy_sync::blocking_mutex;
+use embassy_sync::{self, blocking_mutex};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;

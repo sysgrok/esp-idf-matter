@@ -5,11 +5,7 @@ use core::fmt::Write;
 
 use alloc::sync::Arc;
 
-// `EspRawMutex` (from `esp-idf-hal`) implements embassy-sync 0.7's `RawMutex`,
-// so the embassy-sync `Mutex`es parameterized with it must come from 0.7 too.
-// The local scan-result mutex below is purely internal, so it also stays on 0.7.
-use embassy_sync_07 as embassy_sync;
-
+use embassy_sync;
 use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex;
 

@@ -26,9 +26,9 @@ opt-level = "s"
 [patch.crates-io]
 #rs-matter = { git = "https://github.com/project-chip/rs-matter" }
 #rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
-esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
-esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
-esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
+#esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
+#esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
+#esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
 
 [features]
 default = ["async-io-mini", "rustcrypto"]
@@ -232,14 +232,8 @@ heapless = "0.9"
 enumset = { version = "1", default-features = false }
 embassy-futures = "0.1"
 embassy-sync = "0.8"
-# `esp-idf-hal`'s `EspRawMutex` implements `RawMutex` from embassy-sync 0.7, so
-# code that hands `EspRawMutex` to esp-idf-hal / embassy's own `Mutex` must use
-# the 0.7 API. rs-matter, however, is on embassy-sync 0.8, so mutexes fed into
-# rs-matter's `Signal`/`Mutex`/`Notification` must use the 0.8 `RawMutex`. We
-# therefore depend on both, aliasing the 0.7 one as `embassy_sync_07`.
-embassy-sync-07 = { package = "embassy-sync", version = "0.7" }
 embassy-time = "0.5"
-esp-idf-svc = { version = "0.52", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
+esp-idf-svc = { version = "0.53", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
 rs-matter-stack = { version = "0.3", default-features = false, features = ["std", "log"] }
 async-io = { version = "=2.0.0", default-features = false } # Workaround for https://github.com/smol-rs/async-lock/issues/84
 edge-nal = "0.7"
