@@ -63,7 +63,7 @@ mod example {
     extern crate alloc;
 
     const STACK_SIZE: usize = 20 * 1024;
-    const BUMP_SIZE: usize = 13000;
+    const BUMP_SIZE: usize = 14000;
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();

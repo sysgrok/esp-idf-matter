@@ -94,6 +94,10 @@ CONFIG_LWIP_IPV6_NUM_ADDRESSES=6
 # Just in case
 #CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
 
+# Matter's key derivation (rs-matter `mbedtls` backend) uses `mbedtls_hkdf`, which ESP-IDF
+# does not compile in by default
+CONFIG_MBEDTLS_HKDF_C=y
+
 # Wifi/Thread + BLE coex
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 

@@ -6,6 +6,7 @@ target = "riscv32imc-esp-espidf"
 
 [target.'cfg(target_os = "espidf")']
 rustflags = ["--cfg", "espidf_time64"]
+#rustflags = ["--cfg", "espidf_time64", "--cfg", "espidf_picolibc"]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 
@@ -14,5 +15,5 @@ build-std = ["std", "panic_abort"]
 
 [env]
 ESP_IDF_SDKCONFIG_DEFAULTS = ".github/configs/sdkconfig.defaults"
-ESP_IDF_VERSION = "v5.5.5"
-#MCU = "esp32h2"
+ESP_IDF_VERSION = "v5.5.3"
+#MCU = "esp32c6"

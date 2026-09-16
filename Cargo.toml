@@ -31,7 +31,7 @@ opt-level = "s"
 #esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
 
 [features]
-default = ["async-io-mini", "rustcrypto"]
+default = ["async-io-mini", "mbedtls"]
 
 # Sizing
 
@@ -197,7 +197,7 @@ kv-blob-store-1024 = ["rs-matter-stack/kv-blob-store-1024"]
 # General
 
 # Use the `async-io-mini` Reactor rather than `async-io` (useful for embedded Rust STD targets like ESP-IDF).
-async-io-mini = ["edge-nal-std/async-io-mini"]
+async-io-mini = ["edge-nal-std/async-io-mini", "dep:async-io-mini"]
 # Crypto backend: Rust Crypto.
 rustcrypto = ["rs-matter-stack/rustcrypto"]
 # Crypto backend: mbedTLS.
@@ -238,6 +238,7 @@ rs-matter-stack = { version = "0.3", default-features = false, features = ["std"
 async-io = { version = "=2.0.0", default-features = false } # Workaround for https://github.com/smol-rs/async-lock/issues/84
 edge-nal = "0.7"
 edge-nal-std = { version = "0.7", default-features = false }
+async-io-mini = { version = "0.4.1", features = ["stack-size-7168"], default-features = false, optional = true }
 
 [build-dependencies]
 embuild = "0.33"
