@@ -53,6 +53,8 @@ struct State {
     c2_cccd_handle: Option<Handle>,
     connection: Option<Connection>,
     conn_gen: usize,
+    /// The `conn_gen` the BTP session was last reset for (see `State::sync_btp`)
+    btp_gen: Option<usize>,
     in_data: Vec<u8, MAX_MTU_SIZE>,
     /// The transaction ID corresponding to the incoming data (if non-empty)
     in_trans: u32,
@@ -74,6 +76,7 @@ impl State {
             c2_cccd_handle: None,
             connection: None,
             conn_gen: 0,
+            btp_gen: None,
             in_data: Vec::new(),
             in_trans: 0,
             out_data: Vec::new(),
@@ -91,12 +94,28 @@ impl State {
             c2_cccd_handle: None,
             connection: None,
             conn_gen: 0,
+            btp_gen: None,
             in_data <- Vec::init(),
             in_trans: 0,
             out_data <- Vec::init(),
             out_nack: false,
             response <- gatt_response::init(),
         })
+    }
+
+    /// Reset the BTP session if it still belongs to a previous BLE connection.
+    ///
+    /// Every BLE connection is a brand-new BTP session. Both pumps - the incoming one and the
+    /// outgoing one - call this under the state lock before they touch `btp`, so that neither
+    /// can ever operate on the session of a connection that is already gone. In particular the
+    /// outgoing pump must not push a frame left over from the previous session (typically a
+    /// stand-alone ACK that became due after the peer had disconnected) down the new connection:
+    /// that frame carries the old session's sequence numbers and precedes the handshake response.
+    fn sync_btp(&mut self, btp: &Btp) {
+        if self.btp_gen != Some(self.conn_gen) {
+            btp.reset();
+            self.btp_gen = Some(self.conn_gen);
+        }
     }
 }
 
@@ -267,18 +286,15 @@ where
     where
         T: Borrow<BtDriver<'d, M>>,
     {
-        let mut generation = None;
-
         loop {
             let processed = self.context.state.lock(|state| {
                 let mut state = state.borrow_mut();
 
-                if let Some(connection) = state.connection.as_ref() {
-                    if generation != Some(state.conn_gen) {
-                        btp.reset();
-                        generation = Some(state.conn_gen);
-                    }
+                if state.connection.is_some() {
+                    state.sync_btp(btp);
+                }
 
+                if let Some(connection) = state.connection.as_ref() {
                     if !state.in_data.is_empty() {
                         btp.process_incoming(
                             connection.mtu,
@@ -329,15 +345,23 @@ where
                     return Ok(false);
                 };
 
-                let Some(conn) = state.connection.as_ref() else {
+                // Copy the connection out, as `sync_btp` needs the state mutably below
+                let Some((conn_id, conn_mtu, subscribed)) = state
+                    .connection
+                    .as_ref()
+                    .map(|conn| (conn.conn_id, conn.mtu, conn.subscribed))
+                else {
                     return Ok(false);
                 };
 
-                if !conn.subscribed {
+                if !subscribed {
                     // Peer is not subscribed to indications,
                     // so we shouldn't send anything
                     return Ok(false);
                 }
+
+                // Never emit anything on behalf of a previous connection's session.
+                state.sync_btp(btp);
 
                 if state.out_nack {
                     // The previous indication has not been acknowledged
@@ -347,12 +371,12 @@ where
 
                 state.out_data.resize_default(MAX_MTU_SIZE).unwrap();
 
-                let len = btp.process_outgoing(conn.mtu, &mut state.out_data)?;
+                let len = btp.process_outgoing(conn_mtu, &mut state.out_data)?;
                 if len > 0 {
                     let data = &state.out_data[..len];
 
                     gatts
-                        .indicate(gatt_if, conn.conn_id, c2_handle, data)
+                        .indicate(gatt_if, conn_id, c2_handle, data)
                         .map_err(to_matter_err)?;
 
                     // Mark the current outgoing indication as not acknowledged
