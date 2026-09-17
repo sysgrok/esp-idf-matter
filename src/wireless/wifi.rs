@@ -25,7 +25,7 @@ use super::EspWirelessMatterStack;
 use super::GATTS_APP_ID;
 
 /// A type alias for an ESP-IDF Matter stack running over Wifi (and BLE, during commissioning).
-pub type EspWifiMatterStack<'a, const B: usize, E> = EspWirelessMatterStack<'a, B, Wifi, E>;
+pub type EspWifiMatterStack<'a, E> = EspWirelessMatterStack<'a, Wifi, E>;
 
 /// A `Wifi` trait implementation via ESP-IDF's Wifi/BT modem
 pub struct EspMatterWifi<'a, 'd, M = BuiltinMdns> {
@@ -39,12 +39,12 @@ pub struct EspMatterWifi<'a, 'd, M = BuiltinMdns> {
 
 impl<'a, 'd> EspMatterWifi<'a, 'd, BuiltinMdns> {
     /// Create a new instance of the `EspMatterWifi` type .
-    pub fn new_with_builtin_mdns<const B: usize, E>(
+    pub fn new_with_builtin_mdns<E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         timer: EspTaskTimerService,
         nvs: EspDefaultNvsPartition,
-        stack: &'a EspWifiMatterStack<B, E>,
+        stack: &'a EspWifiMatterStack<E>,
     ) -> Self
     where
         E: Embedding + 'static,
@@ -58,12 +58,12 @@ where
     M: Mdns,
 {
     /// Create a new instance of the `EspMatterWifi` type.
-    pub fn new<const B: usize, E>(
+    pub fn new<E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         timer: EspTaskTimerService,
         nvs: EspDefaultNvsPartition,
-        stack: &'a EspWifiMatterStack<B, E>,
+        stack: &'a EspWifiMatterStack<E>,
         mdns: M,
     ) -> Self
     where
