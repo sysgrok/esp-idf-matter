@@ -24,8 +24,8 @@ debug = true
 opt-level = "s"
 
 [patch.crates-io]
-rs-matter = { git = "https://github.com/project-chip/rs-matter" }
-#rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
+#rs-matter = { git = "https://github.com/project-chip/rs-matter" }
+rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack", branch = "remove-bump-alloc" }
 #esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
 #esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
 #esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }

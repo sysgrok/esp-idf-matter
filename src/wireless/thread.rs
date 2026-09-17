@@ -29,7 +29,7 @@ use super::GATTS_APP_ID;
 extern crate alloc;
 
 /// A type alias for an ESP-IDF Matter stack running over Thread (and BLE, during commissioning).
-pub type EspThreadMatterStack<'a, const B: usize, E> = EspWirelessMatterStack<'a, B, Thread, E>;
+pub type EspThreadMatterStack<'a, E> = EspWirelessMatterStack<'a, Thread, E>;
 
 /// A `Thread` trait implementation via ESP-IDF's Thread/BT modem
 pub struct EspMatterThread<'a, 'd> {
@@ -43,12 +43,12 @@ pub struct EspMatterThread<'a, 'd> {
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
     /// Create a new instance of the `EspMatterThread` type.
-    pub fn new<const B: usize, E>(
+    pub fn new<E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         mounted_event_fs: Arc<MountedEventfs>,
-        stack: &'a EspThreadMatterStack<B, E>,
+        stack: &'a EspThreadMatterStack<E>,
     ) -> Self
     where
         E: Embedding + 'static,

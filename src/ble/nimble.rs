@@ -284,7 +284,7 @@ impl<'a, 'd> EspBtpGattPeripheral<'a, 'd> {
 
         // Two concurrent pumps: incoming C1 writes, and outgoing C2 indications - which also drives
         // (re)advertising synchronously, so it needs no future of its own. This keeps the `run`
-        // future (which rs-matter-stack bump-allocates) small.
+        // future small.
         select(self.process_incoming(btp), self.process_outgoing(btp))
             .coalesce()
             .await
@@ -593,7 +593,7 @@ impl<'a, 'd> EspBtpGattPeripheral<'a, 'd> {
     }
 
     /// Configure and (re)start connectable, undirected advertising. Synchronous - deliberately not a
-    /// separate async task, so the bump-allocated `run` future stays small.
+    /// separate async task, so the `run` future stays small.
     fn advertise(&self) -> Result<(), Error> {
         ensure_addr(false).map_err(to_matter_err_ble)?;
 

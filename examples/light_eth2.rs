@@ -58,8 +58,9 @@ mod example {
 
     extern crate alloc;
 
-    const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
-    const BUMP_SIZE: usize = 17000;
+    // The `run*` future of the Matter stack lives on this stack now
+    // (it used to be bump-allocated inside `MATTER_STACK`), so size it accordingly
+    const STACK_SIZE: usize = 37 * 1024;
 
     const THREAD_DATASET: &str = env!("THREAD_DATASET");
 
@@ -87,7 +88,7 @@ mod example {
     #[inline(never)]
     #[cold]
     fn run() -> Result<(), anyhow::Error> {
-        let result = block_on(matter());
+        let result = block_on(pin!(matter()));
 
         if let Err(e) = &result {
             error!("Matter aborted execution with error: {e:?}");
@@ -165,10 +166,7 @@ mod example {
             // Chain any extra Endpoint 0 clusters of your own the same way.
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
-                Async(EspEthMatterStack::<0, ()>::root_handler(
-                    &(),
-                    &mut weak_rand,
-                )),
+                Async(EspEthMatterStack::<()>::root_handler(&(), &mut weak_rand)),
             )
             // Our on-off cluster, on Endpoint 1
             .chain(
@@ -220,7 +218,7 @@ mod example {
 
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
-    static MATTER_STACK: StaticCell<EspEthMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<EspEthMatterStack<()>> = StaticCell::new();
 
     /// Endpoint 0 (the root endpoint) always runs
     /// the hidden Matter system clusters, so we pick ID=1
@@ -229,7 +227,7 @@ mod example {
     /// The Matter Light device Node
     const NODE: Node = Node {
         endpoints: &[
-            EspEthMatterStack::<0, ()>::root_endpoint(),
+            EspEthMatterStack::<()>::root_endpoint(),
             Endpoint::new(
                 LIGHT_ENDPOINT_ID,
                 devices!(DEV_TYPE_ON_OFF_LIGHT),

@@ -4,9 +4,7 @@
 //! and thus BLE for commissioning.
 //!
 //! If you want to use Ethernet, utilize `EspEthMatterStack` instead.
-//! If you want to use non-concurrent commissioning, call `run` instead of `run_coex`
-//! and provision a higher `BUMP_SIZE` because the non-concurrent commissioning currently has a much-higher
-//! memory requirements on the futures' sizes (but lower memory requirements inside ESP-IDF).
+//! If you want to use non-concurrent commissioning, call `run` instead of `run_coex`.
 //! (Note: Alexa does not work (yet) with non-concurrent commissioning.)
 //!
 //! The example implements a fictitious Light device (an On-Off Matter cluster).
@@ -62,8 +60,7 @@ mod example {
 
     extern crate alloc;
 
-    const STACK_SIZE: usize = 20 * 1024;
-    const BUMP_SIZE: usize = 14000;
+    const STACK_SIZE: usize = 25 * 1024;
 
     pub fn main() -> Result<(), anyhow::Error> {
         esp_idf_svc::log::init_from_env();
@@ -89,7 +86,7 @@ mod example {
     #[inline(never)]
     #[cold]
     fn run() -> Result<(), anyhow::Error> {
-        let result = block_on(matter());
+        let result = block_on(pin!(matter()));
 
         if let Err(e) = &result {
             error!("Matter aborted execution with error: {e:?}");
@@ -173,7 +170,7 @@ mod example {
             // Chain any extra Endpoint 0 clusters of your own the same way.
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
-                Async(EspThreadMatterStack::<0, ()>::root_handler(
+                Async(EspThreadMatterStack::<()>::root_handler(
                     &(),
                     &mut weak_rand,
                 )),
@@ -238,7 +235,7 @@ mod example {
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
     /// It is also a mandatory requirement when the `ThreadBle` stack variation is used.
-    static MATTER_STACK: StaticCell<EspThreadMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<EspThreadMatterStack<()>> = StaticCell::new();
 
     /// Endpoint 0 (the root endpoint) always runs
     /// the hidden Matter system clusters, so we pick ID=1
@@ -247,7 +244,7 @@ mod example {
     /// The Matter Light device Node
     const NODE: Node = Node {
         endpoints: &[
-            EspThreadMatterStack::<0, ()>::root_endpoint(),
+            EspThreadMatterStack::<()>::root_endpoint(),
             Endpoint::new(
                 LIGHT_ENDPOINT_ID,
                 devices!(DEV_TYPE_ON_OFF_LIGHT),
