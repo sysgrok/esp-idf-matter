@@ -61,7 +61,7 @@ mod example {
 
     extern crate alloc;
 
-    const STACK_SIZE: usize = 20 * 1024; // Can go down to 15K for esp32c6
+    const STACK_SIZE: usize = 10 * 1024;
     const BUMP_SIZE: usize = 18000;
 
     pub fn main() -> Result<(), anyhow::Error> {
@@ -88,7 +88,8 @@ mod example {
     #[inline(never)]
     #[cold]
     fn run() -> Result<(), anyhow::Error> {
-        let result = block_on(matter());
+        // `pin!` keeps the future in this frame: passed by value, `block_on` would copy it into its own
+        let result = block_on(pin!(matter()));
 
         if let Err(e) = &result {
             error!("Matter aborted execution with error: {e:?}");

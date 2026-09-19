@@ -62,7 +62,7 @@ mod example {
 
     extern crate alloc;
 
-    const STACK_SIZE: usize = 20 * 1024;
+    const STACK_SIZE: usize = 10 * 1024;
     const BUMP_SIZE: usize = 14000;
 
     pub fn main() -> Result<(), anyhow::Error> {
@@ -89,7 +89,8 @@ mod example {
     #[inline(never)]
     #[cold]
     fn run() -> Result<(), anyhow::Error> {
-        let result = block_on(matter());
+        // `pin!` keeps the future in this frame: passed by value, `block_on` would copy it into its own
+        let result = block_on(pin!(matter()));
 
         if let Err(e) = &result {
             error!("Matter aborted execution with error: {e:?}");
@@ -122,10 +123,15 @@ mod example {
         let mounted_event_fs = Arc::new(MountedEventfs::mount(6)?);
         init_async_io(mounted_event_fs.clone())?;
 
+        ThreadSpawnConfiguration::set(&ThreadSpawnConfiguration {
+            name: Some(c"heap-monitor"),
+            ..Default::default()
+        })?;
+
         // Periodically report free + total internal RAM, so the steady-state headroom (once
         // rs-matter, OpenThread and the BLE host have all claimed their share) can be observed.
         std::thread::Builder::new()
-            .stack_size(2048)
+            .stack_size(3092)
             .spawn(|| loop {
                 use esp_idf_svc::sys::{
                     heap_caps_get_info, multi_heap_info_t, MALLOC_CAP_INTERNAL,
