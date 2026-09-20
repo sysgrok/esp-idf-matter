@@ -23,9 +23,9 @@ opt-level = "s"
 debug = true
 opt-level = "s"
 
-[patch.crates-io]
+#[patch.crates-io]
 #rs-matter = { git = "https://github.com/project-chip/rs-matter" }
-rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
+#rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
 #esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
 #esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
 #esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
@@ -234,7 +234,7 @@ embassy-futures = "0.1"
 embassy-sync = "0.8"
 embassy-time = "0.5"
 esp-idf-svc = { version = "0.53", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
-rs-matter-stack = { version = "0.3", default-features = false, features = ["std", "log"] }
+rs-matter-stack = { version = "0.3.1", default-features = false, features = ["std", "log"] }
 async-io = { version = "=2.0.0", default-features = false } # Workaround for https://github.com/smol-rs/async-lock/issues/84
 edge-nal = "0.7"
 edge-nal-std = { version = "0.7", default-features = false }
