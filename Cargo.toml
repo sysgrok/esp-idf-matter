@@ -26,9 +26,9 @@ opt-level = "s"
 #[patch.crates-io]
 #rs-matter = { git = "https://github.com/project-chip/rs-matter" }
 #rs-matter-stack = { git = "https://github.com/sysgrok/rs-matter-stack" }
-#esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc" }
-#esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal" }
-#esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys" }
+#esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf" }
+#esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf" }
+#esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf" }
 
 [features]
 default = ["async-io-mini", "mbedtls"]
