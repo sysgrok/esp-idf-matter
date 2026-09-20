@@ -9,6 +9,11 @@ on:
     - cron: "50 6 * * *"
   workflow_dispatch:
 
+# Cancel any in-flight run for the same PR / branch when a new commit is pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   rust_toolchain: nightly
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
