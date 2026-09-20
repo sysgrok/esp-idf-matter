@@ -3,20 +3,38 @@ name: PublishDryRun
 on: workflow_dispatch
 
 env:
-  rust_toolchain: nightly
+  RUST_TOOLCHAIN: nightly
+  CRATE_NAME: esp-idf-matter
+  TARGET: riscv32imc-esp-espidf
+  IDF_VERSION: v5.5.5
 
 jobs:
-  publishdryrun:
-    name: Publish Dry Run
+  publish_dry_run:
+    name: PublishDryRun
     runs-on: ubuntu-latest
     steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v3
-
-      - name: Setup | Rust
-        uses: dtolnay/rust-toolchain@v1
+      - name: Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.rust_toolchain }}
-          components: rust-src
-      - name: Build | Publish Dry Run
-        run: export ESP_IDF_TOOLS_INSTALL_DIR=out; export ESP_IDF_SDKCONFIG_DEFAULTS=$(pwd)/.github/configs/sdkconfig.defaults; cargo publish --dry-run --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy, rust-src
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: PublishDryRun
+        env:
+          ESP_IDF_VERSION: ${{ env.IDF_VERSION }}
+          ESP_IDF_SDKCONFIG_DEFAULTS: "${{ github.workspace }}/.github/configs/sdkconfig.defaults"
+        run: cargo publish --dry-run --target ${{ env.TARGET }} -Zbuild-std=std,panic_abort
+
+      - name: Get the crate version from cargo
+        run: |
+          version=$(cargo metadata --format-version=1 --no-deps | jq -r ".packages[] | select(.name == \"${{env.CRATE_NAME}}\") | .version")
+          echo "crate_version=$version" >> $GITHUB_ENV
+          echo "${{env.CRATE_NAME}} version: $version"
+
+      - name: Tag the new release (dry run)
+        run: |
+          echo "Would create tag: v${{env.crate_version}}"
+          echo "Would use message: Release v${{env.crate_version}}"

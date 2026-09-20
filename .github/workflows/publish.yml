@@ -3,39 +3,45 @@ name: Publish
 on: workflow_dispatch
 
 env:
-  rust_toolchain: nightly
-  CRATE_NAME: esp-idf-svc
+  RUST_TOOLCHAIN: nightly
+  CRATE_NAME: esp-idf-matter
+  TARGET: riscv32imc-esp-espidf
+  IDF_VERSION: v5.5.5
 
 jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    # `contents: write` is required so the "Tag the new release" step can push
+    # the git tag. The default GITHUB_TOKEN is read-only for repos/orgs whose
+    # default workflow permissions are "read", which is why tagging fails today.
+    permissions:
+      contents: write
     steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v3
-      - name: Setup | Rust
-        uses: dtolnay/rust-toolchain@v1
+      - name: Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.rust_toolchain }}
-          components: rust-src
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy, rust-src
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Login
-        run: cargo login ${{ secrets.crates_io_token }}
-      - name: Build | Publish
-        run: export ESP_IDF_TOOLS_INSTALL_DIR=out; export ESP_IDF_SDKCONFIG_DEFAULTS=$(pwd)/.github/configs/sdkconfig.defaults; cargo publish --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
-      - name: Build Documentation
-        run: cargo doc --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort; echo "<meta http-equiv=\"refresh\" content=\"0; url=esp_idf_svc\">" > target/riscv32imc-esp-espidf/doc/index.html; mv target/riscv32imc-esp-espidf/doc ./docs
-      - name: Deploy Documentation
-        if: ${{ github.ref == 'refs/heads/master' }}
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          force_orphan: true
-          publish_dir: ./docs
+        run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Publish
+        env:
+          ESP_IDF_VERSION: ${{ env.IDF_VERSION }}
+          ESP_IDF_SDKCONFIG_DEFAULTS: "${{ github.workspace }}/.github/configs/sdkconfig.defaults"
+        run: cargo publish --target ${{ env.TARGET }} -Zbuild-std=std,panic_abort
+
       - name: Get the crate version from cargo
         run: |
           version=$(cargo metadata --format-version=1 --no-deps | jq -r ".packages[] | select(.name == \"${{env.CRATE_NAME}}\") | .version")
           echo "crate_version=$version" >> $GITHUB_ENV
           echo "${{env.CRATE_NAME}} version: $version"
+
       - name: Tag the new release
         uses: rickstaa/action-create-tag@v1
         with:
