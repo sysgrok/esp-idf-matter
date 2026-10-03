@@ -235,7 +235,7 @@ embassy-sync = "0.8"
 embassy-time = "0.5"
 esp-idf-svc = { version = "0.53", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
 rs-matter-stack = { version = "0.3.1", default-features = false, features = ["std", "log"] }
-async-io = { version = "=2.0.0", default-features = false } # Workaround for https://github.com/smol-rs/async-lock/issues/84
+async-io = { version = "2.6", default-features = false }
 edge-nal = "0.7"
 edge-nal-std = { version = "0.7", default-features = false }
 async-io-mini = { version = "0.4.1", features = ["stack-size-2048"], default-features = false, optional = true }
