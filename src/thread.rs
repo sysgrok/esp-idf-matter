@@ -552,11 +552,11 @@ where
                 Ok(())
             })?;
 
-            info!("mDNS services changed, updating...");
+            debug!("mDNS services changed, updating...");
 
             self.update_services(matter, &services)?;
 
-            info!("mDNS services updated");
+            debug!("mDNS services updated");
 
             self.log_srp_state();
 
