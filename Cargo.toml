@@ -225,6 +225,8 @@ examples = [
     "esp-idf-svc/binstart", 
     "esp-idf-svc/critical-section",
 ]
+# Periodically log the free/total internal RAM on the console (`light_thread` example only).
+examples-heap-monitor = []
 
 [dependencies]
 log = { version = "0.4", default-features = false }

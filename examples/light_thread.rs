@@ -124,33 +124,8 @@ mod example {
         let mounted_event_fs = Arc::new(MountedEventfs::mount(6)?);
         init_async_io(mounted_event_fs.clone())?;
 
-        ThreadSpawnConfiguration::set(&ThreadSpawnConfiguration {
-            name: Some(c"heap-monitor"),
-            ..Default::default()
-        })?;
-
-        // Periodically report free + total internal RAM, so the steady-state headroom (once
-        // rs-matter, OpenThread and the BLE host have all claimed their share) can be observed.
-        std::thread::Builder::new()
-            .stack_size(3092)
-            .spawn(|| loop {
-                use esp_idf_svc::sys::{
-                    heap_caps_get_info, multi_heap_info_t, MALLOC_CAP_INTERNAL,
-                };
-
-                let mut info: multi_heap_info_t = unsafe { core::mem::zeroed() };
-                unsafe { heap_caps_get_info(&mut info, MALLOC_CAP_INTERNAL) };
-                info!(
-                    "HEAP internal: free={} largest={} min_ever={} allocated={} (bytes)",
-                    info.total_free_bytes,
-                    info.largest_free_block,
-                    info.minimum_free_bytes,
-                    info.total_allocated_bytes,
-                );
-
-                std::thread::sleep(core::time::Duration::from_secs(5));
-            })
-            .unwrap();
+        #[cfg(feature = "examples-heap-monitor")]
+        spawn_heap_monitor()?;
 
         // Frees the Classic-BT memory pool in BLE-only mode. Only available with the Bluedroid
         // host; NimBLE (and the H2/C6, which have no Classic BT) have nothing to free here.
@@ -239,6 +214,36 @@ mod example {
 
         // Run Matter
         matter.await?;
+
+        Ok(())
+    }
+
+    /// Periodically report free + total internal RAM, so the steady-state headroom (once
+    /// rs-matter, OpenThread and the BLE host have all claimed their share) can be observed.
+    #[cfg(feature = "examples-heap-monitor")]
+    fn spawn_heap_monitor() -> Result<(), anyhow::Error> {
+        use esp_idf_svc::sys::{heap_caps_get_info, multi_heap_info_t, MALLOC_CAP_INTERNAL};
+
+        ThreadSpawnConfiguration::set(&ThreadSpawnConfiguration {
+            name: Some(c"heap-monitor"),
+            ..Default::default()
+        })?;
+
+        std::thread::Builder::new()
+            .stack_size(3092)
+            .spawn(|| loop {
+                let mut info: multi_heap_info_t = unsafe { core::mem::zeroed() };
+                unsafe { heap_caps_get_info(&mut info, MALLOC_CAP_INTERNAL) };
+                info!(
+                    "HEAP internal: free={} largest={} min_ever={} allocated={} (bytes)",
+                    info.total_free_bytes,
+                    info.largest_free_block,
+                    info.minimum_free_bytes,
+                    info.total_allocated_bytes,
+                );
+
+                std::thread::sleep(core::time::Duration::from_secs(5));
+            })?;
 
         Ok(())
     }
