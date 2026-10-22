@@ -25,8 +25,8 @@ use rs_matter_stack::matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
 use rs_matter_stack::matter::dm::clusters::thread_diag::{
-    NeighborTable, NetworkFaultEnum, OperationalDatasetComponents, RouteTable, RoutingRoleEnum,
-    SecurityPolicy, ThreadDiag,
+    MacCounters, NeighborTable, NetworkFaultEnum, OperationalDatasetComponents, RouteTable,
+    RoutingRoleEnum, SecurityPolicy, ThreadDiag,
 };
 use rs_matter_stack::matter::dm::clusters::wifi_diag::WirelessDiag;
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
@@ -52,6 +52,8 @@ where
     M: NetifMode,
 {
     thread: Mutex<EspRawMutex, &'a EspThread<'d, M>>,
+    // Unlocked access for the (sync) diagnostics, which only do short OpenThread reads
+    diag: &'a EspThread<'d, M>,
     operational: blocking_mutex::Mutex<EspRawMutex, Cell<bool>>,
     sysloop: EspSystemEventLoop,
 }
@@ -64,6 +66,7 @@ where
     pub fn new(thread: &'a EspThread<'d, M>, sysloop: EspSystemEventLoop) -> Self {
         Self {
             thread: Mutex::new(thread),
+            diag: thread,
             operational: blocking_mutex::Mutex::new(Cell::new(false)),
             sysloop,
         }
@@ -84,6 +87,36 @@ where
         thread: &EspThread<'_, MM>,
     ) -> Result<bool, EspError> {
         Ok(!matches!(thread.role()?, Role::Detached | Role::Disabled))
+    }
+
+    /// Return `None` without calling `f` if the node has no Active Operational Dataset.
+    fn if_commissioned<T>(
+        &self,
+        f: impl FnOnce(&EspThread<'d, M>) -> Result<T, EspError>,
+    ) -> Result<Option<T>, Error> {
+        if !self.is_commissioned()? {
+            return Ok(None);
+        }
+
+        f(self.diag).map(Some).map_err(to_net_error)
+    }
+
+    fn is_commissioned(&self) -> Result<bool, Error> {
+        self.diag.is_commissioned().map_err(to_net_error)
+    }
+
+    /// Map the `Child` device role to the Matter routing role.
+    fn child_routing_role(&self) -> Result<RoutingRoleEnum, EspError> {
+        if !self.diag.rx_on_when_idle()? {
+            return Ok(RoutingRoleEnum::SleepyEndDevice);
+        }
+
+        #[cfg(esp_idf_openthread_ftd)]
+        if self.diag.router_eligible()? {
+            return Ok(RoutingRoleEnum::REED);
+        }
+
+        Ok(RoutingRoleEnum::EndDevice)
     }
 }
 
@@ -312,98 +345,261 @@ where
 
 impl<M> DynBase for EspMatterThreadCtl<'_, '_, M> where M: NetifMode {}
 
-// TODO
 impl<M> ThreadDiag for EspMatterThreadCtl<'_, '_, M>
 where
     M: NetifMode,
 {
     fn channel(&self) -> Result<Option<u16>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.channel().map(u16::from))
     }
 
     fn routing_role(&self) -> Result<Option<RoutingRoleEnum>, Error> {
-        Ok(None)
+        // Not null even when not commissioned: OpenThread reports a valid role
+        let role = match self.diag.role().map_err(to_net_error)? {
+            Role::Disabled => RoutingRoleEnum::Unspecified,
+            Role::Detached => RoutingRoleEnum::Unassigned,
+            Role::Child => self.child_routing_role().map_err(to_net_error)?,
+            Role::Router => RoutingRoleEnum::Router,
+            Role::Leader => RoutingRoleEnum::Leader,
+        };
+
+        Ok(Some(role))
     }
 
     fn network_name(
         &self,
         f: &mut dyn FnMut(Option<&str>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        f(None)
+        if self.is_commissioned()? {
+            self.diag
+                .network_name(|name| f(Some(name)))
+                .map_err(to_net_error)?
+        } else {
+            f(None)
+        }
     }
 
     fn pan_id(&self) -> Result<Option<u16>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.pan_id())
     }
 
     fn extended_pan_id(&self) -> Result<Option<u64>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.extended_pan_id())
     }
 
     fn mesh_local_prefix(
         &self,
         f: &mut dyn FnMut(Option<&[u8]>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        f(None)
+        let prefix = self.if_commissioned(|thread| thread.mesh_local_prefix())?;
+
+        if let Some(prefix) = prefix {
+            // Prefix length in bits, followed by the prefix itself
+            let mut buf = [0; 9];
+            buf[0] = 64;
+            buf[1..].copy_from_slice(&prefix);
+
+            f(Some(&buf))
+        } else {
+            f(None)
+        }
     }
 
     fn neighbor_table(
         &self,
-        _f: &mut dyn FnMut(&NeighborTable) -> Result<(), Error>,
+        f: &mut dyn FnMut(&NeighborTable) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        Ok(())
+        let mut result = Ok(());
+
+        self.diag
+            .neighbor_table(|info| {
+                if result.is_ok() {
+                    result = f(&NeighborTable {
+                        ext_address: info.ext_address,
+                        age: info.age,
+                        rloc16: info.rloc16,
+                        link_frame_counter: info.link_frame_counter,
+                        mle_frame_counter: info.mle_frame_counter,
+                        lqi: info.link_quality_in,
+                        average_rssi: info.average_rssi,
+                        last_rssi: info.last_rssi,
+                        frame_error_rate: info.frame_error_rate,
+                        message_error_rate: info.message_error_rate,
+                        rx_on_when_idle: info.rx_on_when_idle,
+                        full_thread_device: info.full_thread_device,
+                        full_network_data: info.full_network_data,
+                        is_child: info.is_child,
+                    });
+                }
+            })
+            .map_err(to_net_error)?;
+
+        result
     }
 
     fn route_table(
         &self,
-        _f: &mut dyn FnMut(&RouteTable) -> Result<(), Error>,
+        f: &mut dyn FnMut(&RouteTable) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        Ok(())
+        let mut result = Ok(());
+
+        self.diag
+            .route_table(|info| {
+                if result.is_ok() {
+                    result = f(&RouteTable {
+                        ext_address: info.ext_address,
+                        rloc16: info.rloc16,
+                        router_id: info.router_id,
+                        next_hop: info.next_hop,
+                        path_cost: info.path_cost,
+                        lqi_in: info.lqi_in,
+                        lqi_out: info.lqi_out,
+                        age: info.age,
+                        allocated: info.allocated,
+                        link_established: info.link_established,
+                    });
+                }
+            })
+            .map_err(to_net_error)?;
+
+        result
     }
 
     fn partition_id(&self) -> Result<Option<u32>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.partition_id())
     }
 
     fn weighting(&self) -> Result<Option<u16>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.leader_weight().map(u16::from))
     }
 
     fn data_version(&self) -> Result<Option<u16>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.net_data_version().map(u16::from))
     }
 
     fn stable_data_version(&self) -> Result<Option<u16>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.net_data_stable_version().map(u16::from))
     }
 
     fn leader_router_id(&self) -> Result<Option<u8>, Error> {
-        Ok(None)
+        self.if_commissioned(|thread| thread.leader_router_id())
+    }
+
+    fn ext_address(&self) -> Result<Option<u64>, Error> {
+        self.if_commissioned(|thread| thread.ext_address())
+    }
+
+    fn rloc_16(&self) -> Result<Option<u16>, Error> {
+        self.if_commissioned(|thread| thread.rloc16())
     }
 
     fn security_policy(&self) -> Result<Option<SecurityPolicy>, Error> {
-        Ok(None)
+        let policy = self
+            .diag
+            .active_dataset_diag()
+            .map_err(to_net_error)?
+            .and_then(|diag| diag.security_policy);
+
+        Ok(policy.map(|policy| SecurityPolicy {
+            rotation_time: policy.rotation_time,
+            flags: security_policy_flags(&policy),
+        }))
     }
 
     fn channel_page0_mask(
         &self,
         f: &mut dyn FnMut(Option<&[u8]>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        f(None)
+        let mask = self
+            .diag
+            .active_dataset_diag()
+            .map_err(to_net_error)?
+            .and_then(|diag| diag.channel_mask);
+
+        if let Some(mask) = mask {
+            // Matter wants the lowest channel in the MSB of the first byte
+            f(Some(&mask.reverse_bits().to_be_bytes()))
+        } else {
+            f(None)
+        }
     }
 
     fn operational_dataset_components(
         &self,
         f: &mut dyn FnMut(Option<&OperationalDatasetComponents>) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        f(None)
+        let Some(diag) = self.diag.active_dataset_diag().map_err(to_net_error)? else {
+            return f(None);
+        };
+
+        let c = diag.components;
+
+        f(Some(&OperationalDatasetComponents {
+            active_timestamp_present: c.active_timestamp_present,
+            pending_timestamp_present: c.pending_timestamp_present,
+            master_key_present: c.network_key_present,
+            network_name_present: c.network_name_present,
+            extended_pan_id_present: c.extended_pan_id_present,
+            mesh_local_prefix_present: c.mesh_local_prefix_present,
+            delay_present: c.delay_present,
+            pan_id_present: c.pan_id_present,
+            channel_present: c.channel_present,
+            pskc_present: c.pskc_present,
+            security_policy_present: c.security_policy_present,
+            channel_mask_present: c.channel_mask_present,
+        }))
     }
 
     fn active_network_faults_list(
         &self,
         _f: &mut dyn FnMut(NetworkFaultEnum) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        // OpenThread does not track these
         Ok(())
+    }
+
+    fn mac_counters(
+        &self,
+        f: &mut dyn FnMut(Option<&MacCounters>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let c = self.diag.mac_counters().map_err(to_net_error)?;
+
+        f(Some(&MacCounters {
+            tx_total_count: c.tx_total,
+            tx_unicast_count: c.tx_unicast,
+            tx_broadcast_count: c.tx_broadcast,
+            tx_ack_requested_count: c.tx_ack_requested,
+            tx_acked_count: c.tx_acked,
+            tx_no_ack_requested_count: c.tx_no_ack_requested,
+            tx_data_count: c.tx_data,
+            tx_data_poll_count: c.tx_data_poll,
+            tx_beacon_count: c.tx_beacon,
+            tx_beacon_request_count: c.tx_beacon_request,
+            tx_other_count: c.tx_other,
+            tx_retry_count: c.tx_retry,
+            tx_direct_max_retry_expiry_count: Some(c.tx_direct_max_retry_expiry),
+            tx_indirect_max_retry_expiry_count: Some(c.tx_indirect_max_retry_expiry),
+            tx_err_cca_count: c.tx_err_cca,
+            tx_err_abort_count: c.tx_err_abort,
+            tx_err_busy_channel_count: c.tx_err_busy_channel,
+            rx_total_count: c.rx_total,
+            rx_unicast_count: c.rx_unicast,
+            rx_broadcast_count: c.rx_broadcast,
+            rx_data_count: c.rx_data,
+            rx_data_poll_count: c.rx_data_poll,
+            rx_beacon_count: c.rx_beacon,
+            rx_beacon_request_count: c.rx_beacon_request,
+            rx_other_count: c.rx_other,
+            rx_address_filtered_count: c.rx_address_filtered,
+            rx_dest_addr_filtered_count: c.rx_dest_addr_filtered,
+            rx_duplicated_count: c.rx_duplicated,
+            rx_err_no_frame_count: c.rx_err_no_frame,
+            rx_err_unknown_neighbor_count: c.rx_err_unknown_neighbor,
+            rx_err_invalid_src_addr_count: c.rx_err_invalid_src_addr,
+            rx_err_sec_count: c.rx_err_sec,
+            rx_err_fcs_count: c.rx_err_fcs,
+            rx_err_other_count: c.rx_err_other,
+        }))
     }
 }
 
@@ -706,6 +902,25 @@ where
     {
         Self::run(self, matter, ipv6).await
     }
+}
+
+/// The Matter `SecurityPolicy` flags bitmap
+fn security_policy_flags(policy: &esp_idf_svc::thread::SecurityPolicy) -> u16 {
+    [
+        policy.obtain_network_key_enabled,
+        policy.native_commissioning_enabled,
+        policy.routers_enabled,
+        policy.external_commissioning_enabled,
+        policy.commercial_commissioning_enabled,
+        policy.autonomous_enrollment_enabled,
+        policy.network_key_provisioning_enabled,
+        policy.toble_link_enabled,
+        policy.non_ccm_routers_enabled,
+    ]
+    .into_iter()
+    .enumerate()
+    .fold(0, |flags, (bit, set)| flags | ((set as u16) << bit))
+        | ((policy.version_threshold_for_routing as u16 & 0x7) << 9)
 }
 
 fn to_net_constr_error<E>(_err: E) -> NetCtlError {

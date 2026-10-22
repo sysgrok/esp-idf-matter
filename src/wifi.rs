@@ -15,7 +15,8 @@ use esp_idf_svc::handle::RawHandle as _;
 use esp_idf_svc::netif::EspNetif;
 use esp_idf_svc::sys::{esp, EspError};
 use esp_idf_svc::wifi::{
-    AsyncWifi, AuthMethod, ClientConfiguration, Configuration::Client, EspWifi,
+    AccessPointInfo, AsyncWifi, AuthMethod, ClientConfiguration, Configuration::Client, EspWifi,
+    PhyMode,
 };
 
 use log::{info, warn};
@@ -60,6 +61,13 @@ impl<'a> EspMatterWifiCtl<'a> {
         netif::utils::get_netif_conf(netif, InterfaceTypeEnum::WiFi, |info| {
             Ok(netif::utils::info_is_operational(l2_connected, info))
         })
+    }
+
+    /// The AP the station is associated with.
+    ///
+    /// `None` if not associated, or while a scan or a connect holds the Wifi driver.
+    fn ap_info(&self) -> Option<AccessPointInfo> {
+        self.wifi.try_lock().ok()?.wifi().get_ap_info().ok()
     }
 }
 
@@ -245,26 +253,62 @@ impl WirelessDiag for EspMatterWifiCtl<'_> {
 
 impl DynBase for EspMatterWifiCtl<'_> {}
 
-// TODO
 impl WifiDiag for EspMatterWifiCtl<'_> {
     fn bssid(&self, f: &mut dyn FnMut(Option<&[u8]>) -> Result<(), Error>) -> Result<(), Error> {
-        f(None)
+        let ap_info = self.ap_info();
+
+        f(ap_info.as_ref().map(|ap_info| ap_info.bssid.as_slice()))
     }
 
     fn security_type(&self) -> Result<Nullable<SecurityTypeEnum>, Error> {
-        Ok(Nullable::none())
+        let Some(ap_info) = self.ap_info() else {
+            return Ok(Nullable::none());
+        };
+
+        // Mixed modes do not tell which of the two is in use
+        let security_type = match ap_info.auth_method {
+            Some(AuthMethod::None) => SecurityTypeEnum::None,
+            Some(AuthMethod::WEP) => SecurityTypeEnum::WEP,
+            Some(AuthMethod::WPA) => SecurityTypeEnum::WPA,
+            Some(AuthMethod::WPA2Personal) => SecurityTypeEnum::WPA2,
+            Some(AuthMethod::WPA3Personal) => SecurityTypeEnum::WPA3,
+            _ => SecurityTypeEnum::Unspecified,
+        };
+
+        Ok(Nullable::some(security_type))
     }
 
     fn wi_fi_version(&self) -> Result<Nullable<WiFiVersionEnum>, Error> {
-        Ok(Nullable::none())
+        let Ok(wifi) = self.wifi.try_lock() else {
+            return Ok(Nullable::none());
+        };
+
+        let version = match wifi.wifi().get_negotiated_phy_mode() {
+            Ok(PhyMode::B) => Some(WiFiVersionEnum::B),
+            Ok(PhyMode::G) => Some(WiFiVersionEnum::G),
+            Ok(PhyMode::A) => Some(WiFiVersionEnum::A),
+            Ok(PhyMode::Ht20 | PhyMode::Ht40) => Some(WiFiVersionEnum::N),
+            Ok(PhyMode::Vht20) => Some(WiFiVersionEnum::Ac),
+            Ok(PhyMode::He20) => Some(WiFiVersionEnum::Ax),
+            // Espressif-proprietary Low Rate has no Matter equivalent
+            Ok(PhyMode::LowRate) | Err(_) => None,
+        };
+
+        Ok(version.map(Nullable::some).unwrap_or(Nullable::none()))
     }
 
     fn channel_number(&self) -> Result<Nullable<u16>, Error> {
-        Ok(Nullable::none())
+        Ok(self
+            .ap_info()
+            .map(|ap_info| Nullable::some(ap_info.channel as _))
+            .unwrap_or(Nullable::none()))
     }
 
     fn rssi(&self) -> Result<Nullable<i8>, Error> {
-        Ok(Nullable::none())
+        Ok(self
+            .ap_info()
+            .map(|ap_info| Nullable::some(ap_info.signal_strength))
+            .unwrap_or(Nullable::none()))
     }
 }
 
