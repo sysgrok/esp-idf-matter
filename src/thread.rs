@@ -25,8 +25,8 @@ use rs_matter_stack::matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
 use rs_matter_stack::matter::dm::clusters::thread_diag::{
-    MacCounters, NeighborTable, NetworkFaultEnum, OperationalDatasetComponents, RouteTable,
-    RoutingRoleEnum, SecurityPolicy, ThreadDiag,
+    MacCounters, MleCounters, NeighborTable, NetworkFaultEnum, OperationalDatasetComponents,
+    RouteTable, RoutingRoleEnum, SecurityPolicy, ThreadDiag,
 };
 use rs_matter_stack::matter::dm::clusters::wifi_diag::WirelessDiag;
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
@@ -601,6 +601,50 @@ where
             rx_err_other_count: c.rx_err_other,
         }))
     }
+
+    fn mle_counters(
+        &self,
+        f: &mut dyn FnMut(Option<&MleCounters>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let c = self.diag.mle_counters().map_err(to_net_error)?;
+
+        f(Some(&MleCounters {
+            detached_role_count: c.detached_role,
+            child_role_count: c.child_role,
+            router_role_count: c.router_role,
+            leader_role_count: c.leader_role,
+            attach_attempt_count: c.attach_attempts,
+            partition_id_change_count: c.partition_id_changes,
+            better_partition_attach_attempt_count: c.better_partition_attach_attempts,
+            parent_change_count: c.parent_changes,
+        }))
+    }
+
+    fn active_timestamp(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .diag
+            .active_dataset_diag()
+            .map_err(to_net_error)?
+            .and_then(|diag| diag.active_timestamp)
+            .map(|timestamp| dataset_timestamp(&timestamp)))
+    }
+
+    fn pending_timestamp(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .diag
+            .pending_dataset_diag()
+            .map_err(to_net_error)?
+            .and_then(|diag| diag.pending_timestamp)
+            .map(|timestamp| dataset_timestamp(&timestamp)))
+    }
+
+    fn delay(&self) -> Result<Option<u32>, Error> {
+        Ok(self
+            .diag
+            .pending_dataset_diag()
+            .map_err(to_net_error)?
+            .and_then(|diag| diag.delay))
+    }
 }
 
 impl<T: NetifMode> EspNetifAccess for EspMatterThreadCtl<'_, '_, T> {
@@ -614,6 +658,10 @@ impl<T: NetifMode> EspNetifAccess for EspMatterThreadCtl<'_, '_, T> {
             thread.netif(),
             Self::fetch_is_thread_connected(&thread).unwrap_or(false),
         )
+    }
+
+    fn hw_addr(&self) -> Option<[u8; 8]> {
+        self.diag.ext_address().ok().map(u64::to_be_bytes)
     }
 }
 
@@ -902,6 +950,11 @@ where
     {
         Self::run(self, matter, ipv6).await
     }
+}
+
+/// A Thread dataset timestamp as the 64-bit value of its TLV: seconds, ticks and the authoritative bit
+fn dataset_timestamp(timestamp: &esp_idf_svc::thread::Timestamp) -> u64 {
+    (timestamp.seconds << 16) | ((timestamp.ticks as u64) << 1) | timestamp.authoritative as u64
 }
 
 /// The Matter `SecurityPolicy` flags bitmap

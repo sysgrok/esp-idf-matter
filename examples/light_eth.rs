@@ -38,11 +38,12 @@ mod example {
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
     use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
-    use esp_idf_matter::matter::persist::DummyKvBlobStore;
+    use esp_idf_matter::matter::persist::{DummyKvBlobStore, VENDOR_KEYS_START};
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
-    use esp_idf_matter::matter::{clusters, devices};
+    use esp_idf_matter::matter::{clusters, devices, root_endpoint};
     use esp_idf_matter::netif::{EspMatterNetStack, EspMatterNetif};
     use esp_idf_matter::stack::matter::transport::network::mdns::builtin::BuiltinMdns;
+    use esp_idf_matter::sw_diag::EspSwDiag;
 
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::hal::peripherals::Peripherals;
@@ -151,6 +152,7 @@ mod example {
         let on_off = OnOffHandler::new_standalone(
             Dataver::new_rand(&mut weak_rand),
             LIGHT_ENDPOINT_ID,
+            VENDOR_KEYS_START,
             TestOnOffDeviceLogic::new(true),
         );
 
@@ -165,14 +167,14 @@ mod example {
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
                 Async(EspEthMatterStack::<0, ()>::root_handler(
-                    &(),
+                    &EspSwDiag,
                     &mut weak_rand,
                 )),
             )
             // Our on-off cluster, on Endpoint 1
             .chain(
                 |e, c| e == LIGHT_ENDPOINT_ID && c == TestOnOffDeviceLogic::CLUSTER.id,
-                on_off::HandlerAsyncAdaptor(&on_off),
+                Async(on_off::HandlerAdaptor(&on_off)),
             )
             // Each Endpoint needs a Descriptor cluster too
             // Just use the one that `rs-matter` provides out of the box
@@ -199,6 +201,8 @@ mod example {
             // Since we are pretending to use a wired Ethernet connection - yet -
             // we are using a Wifi STA - provide the Wifi netif here
             EspMatterNetif::new(wifi.wifi().sta_netif(), InterfaceTypeEnum::WiFi, sysloop),
+            // No Ethernet diagnostics, as the netif is not really Ethernet
+            &(),
             // The Matter stack needs an mDNS service to advertise itself
             &mut mdns,
             // The crypto provider
@@ -231,7 +235,7 @@ mod example {
     /// The Matter Light device Node
     const NODE: Node = Node {
         endpoints: &[
-            EspEthMatterStack::<0, ()>::root_endpoint(),
+            root_endpoint!(eth, sw_diag(heap, watermarks, thread)),
             Endpoint::new(
                 LIGHT_ENDPOINT_ID,
                 devices!(DEV_TYPE_ON_OFF_LIGHT),

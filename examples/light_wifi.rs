@@ -40,9 +40,10 @@ mod example {
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
     use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
-    use esp_idf_matter::matter::persist::DummyKvBlobStore;
+    use esp_idf_matter::matter::persist::{DummyKvBlobStore, VENDOR_KEYS_START};
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
-    use esp_idf_matter::matter::{clusters, devices};
+    use esp_idf_matter::matter::{clusters, devices, root_endpoint};
+    use esp_idf_matter::sw_diag::EspSwDiag;
     use esp_idf_matter::wireless::{EspMatterWifi, EspWifiMatterStack};
 
     #[cfg(esp_idf_bt_bluedroid_enabled)]
@@ -134,6 +135,7 @@ mod example {
         let on_off = OnOffHandler::new_standalone(
             Dataver::new_rand(&mut weak_rand),
             LIGHT_ENDPOINT_ID,
+            VENDOR_KEYS_START,
             TestOnOffDeviceLogic::new(true),
         );
 
@@ -148,14 +150,14 @@ mod example {
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
                 Async(EspWifiMatterStack::<0, ()>::root_handler(
-                    &(),
+                    &EspSwDiag,
                     &mut weak_rand,
                 )),
             )
             // Our on-off cluster, on Endpoint 1
             .chain(
                 |e, c| e == LIGHT_ENDPOINT_ID && c == TestOnOffDeviceLogic::CLUSTER.id,
-                on_off::HandlerAsyncAdaptor(&on_off),
+                Async(on_off::HandlerAdaptor(&on_off)),
             )
             // Each Endpoint needs a Descriptor cluster too
             // Just use the one that `rs-matter` provides out of the box
@@ -206,7 +208,7 @@ mod example {
     /// The Matter Light device Node
     const NODE: Node = Node {
         endpoints: &[
-            EspWifiMatterStack::<0, ()>::root_endpoint(),
+            root_endpoint!(wifi, sw_diag(heap, watermarks, thread)),
             Endpoint::new(
                 LIGHT_ENDPOINT_ID,
                 devices!(DEV_TYPE_ON_OFF_LIGHT),

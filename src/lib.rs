@@ -33,6 +33,7 @@ pub mod netif;
 #[cfg(esp_idf_comp_nvs_flash_enabled)]
 pub mod persist;
 pub mod stack;
+pub mod sw_diag;
 #[cfg(all(
     esp_idf_comp_openthread_enabled,
     esp_idf_openthread_enabled,

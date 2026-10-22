@@ -101,6 +101,9 @@ CONFIG_MBEDTLS_HKDF_C=y
 # Wifi/Thread + BLE coex
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 
+# So that the Software Diagnostics cluster can report the FreeRTOS tasks
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
 # So that the QR code does not get distorted by misaligned log lines
 CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
 

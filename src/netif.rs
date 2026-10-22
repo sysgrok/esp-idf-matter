@@ -47,11 +47,16 @@ where
         }
     }
 
-    fn load_netif_state(&self, l2_connected: bool, netif: &EspNetif) -> Result<bool, EspError> {
+    fn load_netif_state(
+        &self,
+        l2_connected: bool,
+        netif: &EspNetif,
+        hw_addr: Option<[u8; 8]>,
+    ) -> Result<bool, EspError> {
         self.netif_state.lock(|state| {
             state
                 .borrow_mut()
-                .load(l2_connected, netif, self.netif_type)
+                .load(l2_connected, netif, self.netif_type, hw_addr)
         })
     }
 }
@@ -70,9 +75,11 @@ where
 {
     async fn wait_changed(&self) {
         loop {
+            let hw_addr = self.netif_access.hw_addr();
+
             let changed = self
                 .netif_access
-                .access(|netif, l2_connected| self.load_netif_state(l2_connected, netif))
+                .access(|netif, l2_connected| self.load_netif_state(l2_connected, netif, hw_addr))
                 .await
                 .unwrap_or(false);
 
@@ -96,6 +103,12 @@ pub trait EspNetifAccess {
     async fn access<F, R>(&self, f: F) -> Result<R, EspError>
     where
         F: FnOnce(&EspNetif, bool) -> Result<R, EspError>;
+
+    /// The hardware address to report instead of the one of the `EspNetif` instance, if any
+    /// (e.g. the IEEE 802.15.4 extended address of a Thread interface)
+    fn hw_addr(&self) -> Option<[u8; 8]> {
+        None
+    }
 }
 
 impl<T> EspNetifAccess for &T
@@ -107,6 +120,10 @@ where
         F: FnOnce(&EspNetif, bool) -> Result<R, EspError>,
     {
         (*self).access(f)
+    }
+
+    fn hw_addr(&self) -> Option<[u8; 8]> {
+        (*self).hw_addr()
     }
 }
 
@@ -189,14 +206,20 @@ impl NetifInfoOwned {
         l2_connected: bool,
         netif: &EspNetif,
         netif_type: InterfaceTypeEnum,
+        hw_addr: Option<[u8; 8]>,
     ) -> Result<bool, EspError> {
         utils::get_netif_conf(netif, netif_type, |info| {
-            Ok(self.load_from_info(l2_connected, info))
+            Ok(self.load_from_info(l2_connected, info, hw_addr.as_ref()))
         })
     }
 
-    fn load_from_info(&mut self, l2_connected: bool, info: &NetifInfo<'_>) -> bool {
-        let hw_addr: &[u8] = info.hw_addr;
+    fn load_from_info(
+        &mut self,
+        l2_connected: bool,
+        info: &NetifInfo<'_>,
+        hw_addr: Option<&[u8; 8]>,
+    ) -> bool {
+        let hw_addr: &[u8] = hw_addr.unwrap_or(info.hw_addr);
 
         let ipv4_addr = utils::info_ipv4_addr(info);
         let ipv6_addr = utils::info_ipv6_addr(info);
