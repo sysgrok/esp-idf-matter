@@ -1,8 +1,9 @@
 //! This module provides the ESP-IDF implementation of the Wifi and Thread Matter stacks.
 
+use rs_matter_stack::matter::dm::networks::wireless::WirelessNetworks;
 use rs_matter_stack::matter::utils::init::{init, Init};
 use rs_matter_stack::network::Embedding;
-use rs_matter_stack::wireless::WirelessBle;
+use rs_matter_stack::wireless::{WirelessBle, MAX_WIRELESS_NETWORKS};
 use rs_matter_stack::MatterStack;
 
 use crate::ble::EspBtpGattContext;
@@ -30,12 +31,20 @@ mod thread;
 mod wifi;
 
 /// A type alias for an ESP-IDF Matter stack running over a wireless network (Wifi or Thread) and BLE.
-pub type EspWirelessMatterStack<'a, const B: usize, T, E> =
-    MatterStack<'a, B, EspWirelessBle<T, E>>;
+///
+/// `S` is the networks store of the Wifi or Thread interface.
+pub type EspWirelessMatterStack<
+    'a,
+    const B: usize,
+    T,
+    E,
+    S = WirelessNetworks<MAX_WIRELESS_NETWORKS, T>,
+> = MatterStack<'a, B, EspWirelessBle<T, E, S>>;
 
 /// A type alias for an ESP-IDF implementation of the `Network` trait for a Matter stack running over
 /// BLE during commissioning, and then over either WiFi or Thread when operating.
-pub type EspWirelessBle<T, E> = WirelessBle<T, EspGatt<E>>;
+pub type EspWirelessBle<T, E, S = WirelessNetworks<MAX_WIRELESS_NETWORKS, T>> =
+    WirelessBle<T, EspGatt<E>, S>;
 
 /// An embedding of the ESP IDF Bluedroid Gatt peripheral context for the `WirelessBle` network type from `rs-matter-stack`.
 ///
