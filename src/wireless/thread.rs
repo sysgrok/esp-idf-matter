@@ -11,11 +11,13 @@ use esp_idf_svc::thread::{EspThread, Node};
 use log::info;
 
 use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::networks::wireless::Thread;
+use rs_matter_stack::matter::dm::networks::wireless::{Thread, ThreadNetworks};
 use rs_matter_stack::matter::error::Error;
 
 use rs_matter_stack::network::{Embedding, Network};
-use rs_matter_stack::wireless::{Gatt, GattTask, ThreadCoex, ThreadCoexTask, ThreadTask};
+use rs_matter_stack::wireless::{
+    Gatt, GattTask, ThreadCoex, ThreadCoexTask, ThreadTask, MAX_WIRELESS_NETWORKS,
+};
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
 use crate::error::to_net_error;
@@ -29,7 +31,10 @@ use super::GATTS_APP_ID;
 extern crate alloc;
 
 /// A type alias for an ESP-IDF Matter stack running over Thread (and BLE, during commissioning).
-pub type EspThreadMatterStack<'a, const B: usize, E> = EspWirelessMatterStack<'a, B, Thread, E>;
+///
+/// `S` is the networks store of the Thread interface.
+pub type EspThreadMatterStack<'a, const B: usize, E, S = ThreadNetworks<MAX_WIRELESS_NETWORKS>> =
+    EspWirelessMatterStack<'a, B, Thread, E, S>;
 
 /// A `Thread` trait implementation via ESP-IDF's Thread/BT modem
 pub struct EspMatterThread<'a, 'd> {
@@ -43,15 +48,16 @@ pub struct EspMatterThread<'a, 'd> {
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
     /// Create a new instance of the `EspMatterThread` type.
-    pub fn new<const B: usize, E>(
+    pub fn new<const B: usize, E, S>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         mounted_event_fs: Arc<MountedEventfs>,
-        stack: &'a EspThreadMatterStack<B, E>,
+        stack: &'a EspThreadMatterStack<B, E, S>,
     ) -> Self
     where
         E: Embedding + 'static,
+        S: Embedding + 'static,
     {
         Self::wrap(
             modem,
