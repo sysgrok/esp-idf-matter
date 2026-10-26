@@ -1,4 +1,8 @@
+use core::pin::pin;
+
 use alloc::sync::Arc;
+
+use embassy_futures::select::select;
 
 #[cfg(esp_idf_bt_bluedroid_enabled)]
 use esp_idf_svc::bt::{self, BtDriver};
@@ -11,8 +15,10 @@ use esp_idf_svc::thread::{EspThread, Node};
 use log::info;
 
 use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
+use rs_matter_stack::matter::dm::clusters::icd_mgmt::{Icd, IcdNetParams};
 use rs_matter_stack::matter::dm::networks::wireless::{Thread, ThreadNetworks};
 use rs_matter_stack::matter::error::Error;
+use rs_matter_stack::matter::utils::select::Coalesce;
 
 use rs_matter_stack::network::{Embedding, Network};
 use rs_matter_stack::wireless::{
@@ -44,6 +50,7 @@ pub struct EspMatterThread<'a, 'd> {
     mounted_event_fs: Arc<MountedEventfs>,
     ble_context: &'a EspBtpGattContext,
     srp_host_eui64: Option<[u8; 8]>,
+    icd: Option<&'a Icd>,
 }
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
@@ -83,6 +90,7 @@ impl<'a, 'd> EspMatterThread<'a, 'd> {
             mounted_event_fs,
             ble_context,
             srp_host_eui64: None,
+            icd: None,
         }
     }
 
@@ -102,6 +110,14 @@ impl<'a, 'd> EspMatterThread<'a, 'd> {
     /// behind on the server per run.
     pub fn with_srp_host_eui64(mut self, eui64: [u8; 8]) -> Self {
         self.srp_host_eui64 = Some(eui64);
+
+        self
+    }
+
+    /// Run as a Sleepy End Device that follows the power mode of `icd`: it polls its
+    /// parent fast while the ICD is active and slowly while it is idle.
+    pub fn with_icd(mut self, icd: &'a Icd) -> Self {
+        self.icd = Some(icd);
 
         self
     }
@@ -162,6 +178,10 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
         // traffic through the MAC filter only for MLE to reject every message.
         thread.set_tod(&[]).map_err(to_net_error)?;
 
+        if let Some(icd) = self.icd {
+            configure_sed(&thread, icd)?;
+        }
+
         thread.enable_ipv6(true).map_err(to_net_error)?;
         thread.srp_autostart().map_err(to_net_error)?;
 
@@ -178,13 +198,15 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
         let net_ctl = EspMatterThreadCtl::new(&thread, self.sysloop.clone());
         let mut mdns = EspMatterThreadSrp::new_with_host_eui64(&thread, self.srp_host_eui64);
 
-        task.run(
+        let mut task = pin!(task.run(
             EspMatterNetStack::new(),
             EspMatterNetif::new(&net_ctl, InterfaceTypeEnum::Thread, self.sysloop.clone()),
             &net_ctl,
             &mut mdns,
-        )
-        .await
+        ));
+        let mut icd = pin!(run_icd(&thread, self.icd));
+
+        select(&mut task, &mut icd).coalesce().await
     }
 }
 
@@ -220,6 +242,10 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
         // traffic through the MAC filter only for MLE to reject every message.
         thread.set_tod(&[]).map_err(to_net_error)?;
 
+        if let Some(icd) = self.icd {
+            configure_sed(&thread, icd)?;
+        }
+
         thread.enable_ipv6(true).map_err(to_net_error)?;
         thread.srp_autostart().map_err(to_net_error)?;
 
@@ -245,14 +271,16 @@ impl ThreadCoex for EspMatterThread<'_, '_> {
         #[cfg(not(esp_idf_bt_bluedroid_enabled))]
         let mut peripheral = EspBtpGattPeripheral::new(bt_p, self.ble_context).unwrap();
 
-        task.run(
+        let mut task = pin!(task.run(
             EspMatterNetStack::new(),
             EspMatterNetif::new(&net_ctl, InterfaceTypeEnum::Thread, self.sysloop.clone()),
             &net_ctl,
             &mut mdns,
             &mut peripheral,
-        )
-        .await
+        ));
+        let mut icd = pin!(run_icd(&thread, self.icd));
+
+        select(&mut task, &mut icd).coalesce().await
     }
 }
 
@@ -273,4 +301,106 @@ impl Drop for ThreadQuiesce<'_, '_> {
         let _ = self.0.srp_stop();
         let _ = self.0.enable_ipv6(false);
     }
+}
+
+/// OpenThread's default child timeout, in seconds (`OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT`).
+const CHILD_TIMEOUT_DEFAULT_S: u32 = 240;
+
+/// The margin added on top of the slowest polling interval when sizing the child timeout: two
+/// missed polls plus some slack.
+const CHILD_TIMEOUT_MARGIN_S: u32 = 30;
+
+/// OpenThread's default child-supervision interval, in seconds
+/// (`OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL`): the child asks its parent for a supervision
+/// message at least this often. Left at its default here.
+const CHILD_SUPERVISION_INTERVAL_S: u32 = 129;
+
+/// OpenThread's default child-supervision check timeout, in seconds
+/// (`OPENTHREAD_CONFIG_CHILD_SUPERVISION_CHECK_TIMEOUT`).
+const CHILD_SUPERVISION_CHECK_TIMEOUT_DEFAULT_S: u32 = 190;
+
+/// Configure the node as a Sleepy End Device (receiver off when idle, MTD, stable network data
+/// only) and size its keep-alives from the slowest polling interval the ICD will ever use.
+fn configure_sed(thread: &EspThread<'_, Node>, icd: &Icd) -> Result<(), Error> {
+    let params = icd.net_params();
+
+    thread
+        .set_link_mode(false, false, false)
+        .map_err(to_net_error)?;
+    thread
+        .set_child_timeout(child_timeout_s(params.max_poll_interval_ms))
+        .map_err(to_net_error)?;
+
+    apply_icd_params(thread, &params)
+}
+
+/// Apply the current ICD polling interval to OpenThread.
+fn apply_icd_params(thread: &EspThread<'_, Node>, params: &IcdNetParams) -> Result<(), Error> {
+    info!(
+        "Thread SED: {:?} / {:?}, polling every {} ms",
+        params.power_mode, params.operating_mode, params.poll_interval_ms
+    );
+
+    thread
+        .set_poll_period(params.poll_interval_ms)
+        .map_err(to_net_error)?;
+    thread
+        .set_child_supervision_check_timeout(child_supervision_check_timeout_s(
+            params.poll_interval_ms,
+        ))
+        .map_err(to_net_error)
+}
+
+/// Follow the ICD power mode: re-apply the polling interval whenever it changes.
+///
+/// Never completes; a no-op (that never completes either) without an ICD.
+async fn run_icd(thread: &EspThread<'_, Node>, icd: Option<&Icd>) -> Result<(), Error> {
+    let Some(icd) = icd else {
+        core::future::pending::<()>().await;
+        unreachable!()
+    };
+
+    // The state machine signals every change of its own state, including the active deadline
+    // moving out on each message received, which leaves the net params as they were. Only a
+    // change of those is worth (re-)programming OpenThread for - and logging.
+    // `configure_sed` applied the first ones.
+    let mut applied = icd.net_params();
+
+    loop {
+        icd.wait_net_changed().await;
+
+        let params = icd.net_params();
+
+        if params != applied {
+            apply_icd_params(thread, &params)?;
+            applied = params;
+        }
+    }
+}
+
+/// The child timeout that fits a polling interval: the parent must not evict the child between
+/// two polls, so the timeout exceeds the interval by a margin - but is never shorter than
+/// OpenThread's default.
+fn child_timeout_s(poll_period_ms: u32) -> u32 {
+    poll_period_ms
+        .div_ceil(1000)
+        .saturating_add(CHILD_TIMEOUT_MARGIN_S)
+        .max(CHILD_TIMEOUT_DEFAULT_S)
+}
+
+/// The child-supervision check timeout that matches a polling interval, never below
+/// OpenThread's default.
+///
+/// A sleepy child only gets the parent's queued supervision message when it polls, so the
+/// longest normal gap between frames from the parent is the supervision interval plus one
+/// polling interval. With a check timeout below that gap (e.g. the 190 s default against a
+/// 900 s interval), every idle period ends in a false "supervision timeout" and a needless
+/// Child Update Request. One more polling interval is added as margin for a missed poll.
+fn child_supervision_check_timeout_s(poll_period_ms: u32) -> u16 {
+    CHILD_SUPERVISION_INTERVAL_S
+        .saturating_add(poll_period_ms.div_ceil(1000).saturating_mul(2))
+        .clamp(
+            CHILD_SUPERVISION_CHECK_TIMEOUT_DEFAULT_S,
+            u32::from(u16::MAX),
+        ) as u16
 }

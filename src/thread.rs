@@ -2,9 +2,15 @@
 
 use core::cell::{Cell, RefCell};
 use core::fmt::Write;
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use core::net::IpAddr;
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use core::pin::pin;
 
 use alloc::sync::Arc;
 
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use embassy_futures::select::{select, select3};
 use embassy_sync;
 use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
 use embassy_sync::mutex::Mutex;
@@ -32,8 +38,16 @@ use rs_matter_stack::matter::dm::clusters::wifi_diag::WirelessDiag;
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::{Error, ErrorCode};
 use rs_matter_stack::matter::fabric::MAX_FABRICS;
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use rs_matter_stack::matter::transport::network::mdns::{DottedName, MdnsRemoteService, MdnsTxt};
 use rs_matter_stack::matter::transport::network::MatterLocalService;
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use rs_matter_stack::matter::transport::network::MatterRemoteService;
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use rs_matter_stack::matter::transport::MdnsResponder;
 use rs_matter_stack::matter::utils::init::{init, Init};
+#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+use rs_matter_stack::matter::utils::select::Coalesce;
 use rs_matter_stack::matter::utils::storage::Vec;
 use rs_matter_stack::matter::utils::sync::DynBase;
 use rs_matter_stack::matter::Matter;
@@ -667,8 +681,9 @@ impl<T: NetifMode> EspNetifAccess for EspMatterThreadCtl<'_, '_, T> {
 
 const MAX_MATTER_SERVICES: usize = MAX_FABRICS + 1;
 
-// TODO: Does not yet implement the Resolve and Browse loops.
-// These need support by the upstream OpenThread `esp-idf-svc` APIs which do not expose DNS yet.
+/// An mDNS implementation for Thread: registers the Matter services over SRP,
+/// and resolves and browses those of others with the DNS client (when the
+/// OpenThread DNS client is enabled).
 pub struct EspMatterThreadSrp<'a, 'd, M>
 where
     M: NetifMode,
@@ -784,6 +799,24 @@ where
 
         info!("SRP hostname set to '{hostname}'");
 
+        #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+        {
+            let thread = self.thread;
+
+            let mut register = pin!(self.run_register(matter));
+            let mut serve = pin!(Self::run_serve(thread, matter));
+
+            select(&mut register, &mut serve).coalesce().await
+        }
+
+        #[cfg(not(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4"))))]
+        {
+            self.run_register(matter).await
+        }
+    }
+
+    /// Register the Matter services with the SRP server, again whenever they change.
+    async fn run_register(&mut self, matter: &Matter<'_>) -> Result<(), Error> {
         loop {
             let mut services = Vec::<_, MAX_MATTER_SERVICES>::new();
             matter.mdns_services(|service| {
@@ -805,6 +838,141 @@ where
             self.log_srp_state();
 
             matter.transport().wait_mdns().await;
+        }
+    }
+
+    /// Serve the resolve and browse requests while the SRP client has a
+    /// server: that is the one the DNS client queries.
+    #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+    async fn run_serve(thread: &EspThread<'_, M>, matter: &Matter<'_>) -> Result<(), Error> {
+        loop {
+            Self::wait_srp_server(thread, true).await?;
+
+            let responder = matter.transport().mdns_responder();
+
+            let mut resolve = pin!(Self::run_resolve(thread, &responder, matter));
+            let mut browse = pin!(Self::run_browse(thread, &responder, matter));
+            let mut lost = pin!(Self::wait_srp_server(thread, false));
+
+            select3(&mut resolve, &mut browse, &mut lost)
+                .coalesce()
+                .await?;
+        }
+    }
+
+    /// Wait until the SRP client has a server (`present`), or no longer has one.
+    #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+    async fn wait_srp_server(thread: &EspThread<'_, M>, present: bool) -> Result<(), Error> {
+        while thread.srp_server_addr().map_err(to_net_error)?.is_some() != present {
+            thread.srp_wait_changed().await;
+        }
+
+        Ok(())
+    }
+
+    /// Resolve the requested Matter services with the DNS client.
+    #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+    async fn run_resolve(
+        thread: &EspThread<'_, M>,
+        responder: &MdnsResponder<'_>,
+        matter: &Matter<'_>,
+    ) -> Result<(), Error> {
+        loop {
+            let service = responder.wait_resolve_request().await;
+
+            // The DNS-SD server of the Border Router serves the Thread domain
+            // `default.service.arpa`, not mDNS `local`
+            let mut label = heapless::String::<33>::new();
+            let service_name = match service {
+                MatterRemoteService::Operational {
+                    compressed_fabric_id,
+                    node_id,
+                } => {
+                    let _ = write!(label, "{compressed_fabric_id:016X}-{node_id:016X}");
+                    "_matter._tcp.default.service.arpa"
+                }
+                MatterRemoteService::Commissionable { id } => {
+                    let _ = write!(label, "{id:016X}");
+                    "_matterc._udp.default.service.arpa"
+                }
+            };
+
+            // ... while `rs-matter` matches answers by their mDNS `local` name
+            let mut instance_name = heapless::String::<128>::new();
+            service.instance_name(&mut instance_name);
+
+            match thread
+                .dns_resolve_service_and_host_address(&label, service_name)
+                .await
+            {
+                Ok(info) => matter.transport().try_deposit_mdns_resolve(
+                    &MdnsRemoteService {
+                        instance_name: DottedName(instance_name.as_str()),
+                        port: Some(info.port),
+                        addrs: info.host_addresses.iter().copied().map(IpAddr::V6),
+                        txt: MdnsTxt::new(&info.txt_data),
+                        scope_id: 0,
+                    },
+                    // Resolved via the SRP server: no on-link vs off-link scoring
+                    &[],
+                ),
+                Err(e) => warn!("mDNS resolve query failed: {e:?}"),
+            }
+        }
+    }
+
+    /// Browse the requested Matter services with the DNS client.
+    #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
+    async fn run_browse(
+        thread: &EspThread<'_, M>,
+        responder: &MdnsResponder<'_>,
+        matter: &Matter<'_>,
+    ) -> Result<(), Error> {
+        loop {
+            let query = responder.wait_browse_request().await;
+
+            let mut service_type = heapless::String::<64>::new();
+            query.service_type(&mut service_type, false);
+
+            let mut service_name = heapless::String::<96>::new();
+            let _ = write!(service_name, "{service_type}.default.service.arpa");
+
+            let instances = match thread.dns_browse(&service_name).await {
+                Ok(instances) => instances,
+                Err(e) => {
+                    warn!("mDNS browse query failed: {e:?}");
+                    continue;
+                }
+            };
+
+            for instance in &instances {
+                let info = instance.info.as_ref();
+
+                if query.needs_resolve() && info.is_none() {
+                    continue;
+                }
+
+                let mut instance_name = heapless::String::<96>::new();
+                let _ = write!(
+                    instance_name,
+                    "{}.{}.local",
+                    instance.label,
+                    query.base_service_type()
+                );
+
+                matter
+                    .transport()
+                    .try_deposit_mdns_browse(&MdnsRemoteService {
+                        instance_name: DottedName(instance_name.as_str()),
+                        port: info.map(|info| info.port),
+                        addrs: info
+                            .into_iter()
+                            .flat_map(|info| info.host_addresses.iter().copied())
+                            .map(IpAddr::V6),
+                        txt: MdnsTxt::new(info.map_or(&[][..], |info| info.txt_data.as_slice())),
+                        scope_id: 0,
+                    });
+            }
         }
     }
 

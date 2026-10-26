@@ -257,6 +257,8 @@ with `cargo-espflash`:
 $ MCU=esp32c3 cargo espflash flash --target riscv32imc-esp-espidf --example light_wifi --features examples --monitor
 ```
 
+The battery-powered Thread examples (ESP32-C6 and ESP32-H2) need more features: `--features examples,case-resumption` for `trv_battery_thread` (a SIT ICD), `--features examples,case-resumption,persistent-subscriptions` for `temp_sensor_battery_thread` (a LIT ICD).
+
 | MCU | "--target" |
 | --- | ------ |
 | esp32c2 | riscv32imc-esp-espidf |
