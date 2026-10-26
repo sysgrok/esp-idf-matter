@@ -262,6 +262,16 @@ path = "examples/light_thread.rs"
 required-features = ["examples"]
 
 [[example]]
+name = "trv_battery_thread"
+path = "examples/trv_battery_thread.rs"
+required-features = ["examples", "case-resumption"]
+
+[[example]]
+name = "temp_sensor_battery_thread"
+path = "examples/temp_sensor_battery_thread.rs"
+required-features = ["examples", "case-resumption", "persistent-subscriptions"]
+
+[[example]]
 name = "light_eth"
 path = "examples/light_eth.rs"
 required-features = ["examples"]
