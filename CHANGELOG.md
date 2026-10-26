@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix: a Thread ICD's child timeout follows its slowest polling interval as the ICD sets it, not as it was when Thread came up, so that the parent keeps a LIT child between its polls
 - New: `EspMatterThread::with_icd`, running as a Sleepy End Device that follows the ICD power mode
 - New: examples `trv_battery_thread` (SIT ICD, light sleep) and `temp_sensor_battery_thread` (LIT ICD, deep sleep)
 - `EspMatterThreadSrp` resolves and browses Matter services with the OpenThread DNS client, while the SRP client has a server; before, nothing over Thread could be resolved (e.g. ICD Check-In clients, subscribers to reconnect to)

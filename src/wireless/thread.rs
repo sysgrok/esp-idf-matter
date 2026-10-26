@@ -320,15 +320,12 @@ const CHILD_SUPERVISION_INTERVAL_S: u32 = 129;
 const CHILD_SUPERVISION_CHECK_TIMEOUT_DEFAULT_S: u32 = 190;
 
 /// Configure the node as a Sleepy End Device (receiver off when idle, MTD, stable network data
-/// only) and size its keep-alives from the slowest polling interval the ICD will ever use.
+/// only), with its keep-alives sized as `apply_icd_params` does.
 fn configure_sed(thread: &EspThread<'_, Node>, icd: &Icd) -> Result<(), Error> {
     let params = icd.net_params();
 
     thread
         .set_link_mode(false, false, false)
-        .map_err(to_net_error)?;
-    thread
-        .set_child_timeout(child_timeout_s(params.max_poll_interval_ms))
         .map_err(to_net_error)?;
 
     apply_icd_params(thread, &params)
@@ -336,9 +333,11 @@ fn configure_sed(thread: &EspThread<'_, Node>, icd: &Icd) -> Result<(), Error> {
 
 /// Apply the current ICD polling interval to OpenThread.
 fn apply_icd_params(thread: &EspThread<'_, Node>, params: &IcdNetParams) -> Result<(), Error> {
+    let child_timeout_s = child_timeout_s(params.max_poll_interval_ms);
+
     info!(
-        "Thread SED: {:?} / {:?}, polling every {} ms",
-        params.power_mode, params.operating_mode, params.poll_interval_ms
+        "Thread SED: {:?} / {:?}, polling every {} ms, child timeout {} s",
+        params.power_mode, params.operating_mode, params.poll_interval_ms, child_timeout_s
     );
 
     thread
@@ -348,6 +347,12 @@ fn apply_icd_params(thread: &EspThread<'_, Node>, params: &IcdNetParams) -> Resu
         .set_child_supervision_check_timeout(child_supervision_check_timeout_s(
             params.poll_interval_ms,
         ))
+        .map_err(to_net_error)?;
+
+    // From the slowest polling interval the ICD will ever use, which it may only set once it
+    // runs (e.g. from its `SII`), after Thread came up: an attached child tells its parent.
+    thread
+        .set_child_timeout(child_timeout_s)
         .map_err(to_net_error)
 }
 
@@ -362,19 +367,19 @@ async fn run_icd(thread: &EspThread<'_, Node>, icd: Option<&Icd>) -> Result<(), 
 
     // The state machine signals every change of its own state, including the active deadline
     // moving out on each message received, which leaves the net params as they were. Only a
-    // change of those is worth (re-)programming OpenThread for - and logging.
-    // `configure_sed` applied the first ones.
-    let mut applied = icd.net_params();
+    // change of those is worth (re-)programming OpenThread for - and logging. The first ones are
+    // applied again: they may have changed since `configure_sed` applied them.
+    let mut applied: Option<IcdNetParams> = None;
 
     loop {
-        icd.wait_net_changed().await;
-
         let params = icd.net_params();
 
-        if params != applied {
+        if applied.as_ref() != Some(&params) {
             apply_icd_params(thread, &params)?;
-            applied = params;
+            applied = Some(params);
         }
+
+        icd.wait_net_changed().await;
     }
 }
 

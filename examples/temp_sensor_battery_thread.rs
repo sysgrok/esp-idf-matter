@@ -25,7 +25,9 @@
 //!   low wakes the device from deep sleep (GPIO4 on the ESP32-C6, which only has the low-power
 //!   path a deep-sleep wake-up needs on GPIO0..7; the BOOT button, GPIO9, on the ESP32-H2);
 //! - the deep-sleep loop: once the ICD state machine reports idle mode, the application waits
-//!   for pending flash writes to drain and deep-sleeps until the next poll is due.
+//!   for pending flash writes to drain and deep-sleeps until the next poll is due;
+//! - the UTC time across deep sleeps: kept by the system clock, which the RTC timer runs on, and
+//!   read from the Trusted Time Source once a day.
 //!
 //! The device is a Temperature Sensor: it takes one (simulated) reading per wake-up, which a
 //! subscribed controller receives as a report during the active window. A wake-up counter kept
@@ -48,6 +50,8 @@ fn main() -> Result<(), anyhow::Error> {
 mod example {
     use core::pin::pin;
 
+    use std::time::{Duration, SystemTime};
+
     use alloc::sync::Arc;
 
     use embassy_futures::select::{select, select3, Either};
@@ -65,19 +69,25 @@ mod example {
         ClusterHandler as _, Icd, IcdModeConfig, IcdPowerMode, LitIcd, LitIcdMgmtHandler,
         OperatingModeEnum,
     };
+    use esp_idf_matter::matter::dm::clusters::time_sync::client::TimeSyncClient;
+    use esp_idf_matter::matter::dm::clusters::time_sync::{
+        GranularityEnum, TimeSourceEnum, UtcTime,
+    };
     use esp_idf_matter::matter::dm::devices::test::{
         DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET,
     };
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ROOT_NODE;
     use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
     use esp_idf_matter::matter::dm::{
-        Async, Cluster, Dataver, DeviceType, EmptyHandler, Endpoint, Node, ReadContext,
+        Async, AsyncHandler, Cluster, Dataver, DeviceType, EmptyHandler, Endpoint, HandlerContext,
+        MatchContext, Node, ReadContext, ReadReply,
     };
-    use esp_idf_matter::matter::error::Error;
+    use esp_idf_matter::matter::error::{Error, ErrorCode};
     use esp_idf_matter::matter::tlv::Nullable;
+    use esp_idf_matter::matter::utils::epoch::MATTER_EPOCH_SECS;
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
     use esp_idf_matter::matter::utils::select::Coalesce;
-    use esp_idf_matter::matter::{clusters, devices, with};
+    use esp_idf_matter::matter::{clusters, devices, with, Matter};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::sw_diag::EspSwDiag;
     use esp_idf_matter::wireless::{EspMatterThread, EspThreadMatterStack};
@@ -93,7 +103,8 @@ mod example {
         esp, esp_deep_sleep_start, esp_restart, esp_sleep_enable_ext1_wakeup_io,
         esp_sleep_enable_timer_wakeup, esp_sleep_ext1_wakeup_mode_t_ESP_EXT1_WAKEUP_ANY_LOW,
         esp_sleep_get_wakeup_cause, esp_sleep_source_t_ESP_SLEEP_WAKEUP_EXT1,
-        esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER, gpio_pulldown_dis, gpio_pullup_en,
+        esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER, gpio_pulldown_dis, gpio_pullup_en, settimeofday,
+        timeval,
     };
 
     use log::{error, info, warn};
@@ -146,6 +157,10 @@ mod example {
     /// LIT devices at all. Also the `SII` it advertises meanwhile.
     const ICD_SIT_SLOW_POLL_MS: u32 = 5000;
 
+    /// How long the time kept across deep sleeps may go without being set from a real source
+    /// (a controller, or the Trusted Time Source), in microseconds: the RTC timer drifts.
+    const TIME_SYNC_EVERY_US: u64 = 24 * 60 * 60 * 1_000_000;
+
     /// How long to wait after entering idle mode before deep-sleeping, so that the background
     /// persistence tasks (fabrics, subscriptions) flush to flash first.
     const SLEEP_SETTLE_MS: u64 = 500;
@@ -191,15 +206,20 @@ mod example {
     async fn matter() -> Result<(), anyhow::Error> {
         // Why did we boot: a cold start, the sleep timer, or the user trigger?
         #[allow(non_upper_case_globals)]
-        match unsafe { esp_sleep_get_wakeup_cause() } {
+        let woken = match unsafe { esp_sleep_get_wakeup_cause() } {
             esp_sleep_source_t_ESP_SLEEP_WAKEUP_TIMER => {
-                info!("Woken up from deep sleep by the timer")
+                info!("Woken up from deep sleep by the timer");
+                true
             }
             esp_sleep_source_t_ESP_SLEEP_WAKEUP_EXT1 => {
-                info!("Woken up by the user trigger (GPIO{WAKE_GPIO})")
+                info!("Woken up by the user trigger (GPIO{WAKE_GPIO})");
+                true
             }
-            _ => info!("Cold boot"),
-        }
+            _ => {
+                info!("Cold boot");
+                false
+            }
+        };
 
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
@@ -269,12 +289,19 @@ mod example {
             .chain(
                 |e, c| e == SENSOR_ENDPOINT_ID && c == DescHandler::CLUSTER.id,
                 Async(desc::DescHandler::new(Dataver::new_rand(&mut weak_rand)).adapt()),
-            );
+            )
+            // Reads the time from the Trusted Time Source when due; serves no cluster.
+            .chain(|_, _| false, ClockKeeper);
 
         // An NVS-backed KV BLOB store: an ICD has to remember its fabrics, its ICD
         // registrations, its CASE resumption records and its subscriptions across reboots.
         let mut store = EspKvBlobStore::new_default(nvs.clone())?;
         stack.startup(&crypto, &mut store).await?;
+
+        // The clock, through the deep sleep: Matter's lived in RAM, which is gone.
+        if woken {
+            restore_clock(stack.matter());
+        }
 
         if stack.matter().has_fabrics() {
             info!(
@@ -303,7 +330,7 @@ mod example {
 
             // Deep-sleep as soon as the ICD state machine lets us. (The Thread driver logs every
             // ICD power mode transition, so a serial capture shows the duty cycle.)
-            let mut deep_sleep = pin!(deep_sleep_when_idle(icd));
+            let mut deep_sleep = pin!(deep_sleep_when_idle(stack.matter(), icd));
 
             // Run Matter and also wait for a reset signal
             let mut wait_reset = pin!(wait_reset(PinDriver::input(
@@ -330,6 +357,55 @@ mod example {
     /// The wake-up counter, kept in RTC RAM across deep sleeps (zeroed on a cold boot only).
     #[link_section = ".rtc.data.wake_count"]
     static mut WAKE_COUNT: u32 = 0;
+
+    /// What the clock was when the device went to sleep, kept in RTC RAM: see [`SleptClock`].
+    #[link_section = ".rtc.data.slept_clock"]
+    static mut SLEPT_CLOCK: SleptClock = SleptClock::UNKNOWN;
+
+    /// What the device knew of the UTC time when it went to sleep; the time itself is in the
+    /// system clock.
+    #[derive(Clone, Copy)]
+    struct SleptClock {
+        /// Its `GranularityEnum`; `NoTimeGranularity` if it did not know the time.
+        granularity: u8,
+        /// When the time was last set from a real source (a controller, or the Trusted Time
+        /// Source), Matter-epoch microseconds; 0 if not since a cold boot.
+        set_utc_us: u64,
+    }
+
+    impl SleptClock {
+        const UNKNOWN: Self = Self {
+            granularity: GranularityEnum::NoTimeGranularity as u8,
+            set_utc_us: 0,
+        };
+    }
+
+    /// Reads the time from the Trusted Time Source when the device has none, or has not had it
+    /// set from a real source for [`TIME_SYNC_EVERY_US`]: not on every wake-up, which would cost
+    /// a CASE session each.
+    #[derive(Clone, Copy)]
+    struct ClockKeeper;
+
+    impl AsyncHandler for ClockKeeper {
+        async fn read(&self, _ctx: impl ReadContext, _reply: impl ReadReply) -> Result<(), Error> {
+            Err(ErrorCode::AttributeNotFound.into())
+        }
+
+        fn bump_dataver(&self, _ctx: impl MatchContext) {}
+
+        async fn run(&self, ctx: impl HandlerContext) -> Result<(), Error> {
+            if time_sync_due(ctx.matter()) {
+                info!("Reading the time from the Trusted Time Source");
+
+                let client = TimeSyncClient::new(ctx.matter(), ctx.crypto());
+                if let Err(e) = client.refresh_once(ctx.kv(), &ctx).await {
+                    warn!("No time from the Trusted Time Source: {e:?}");
+                }
+            }
+
+            core::future::pending().await
+        }
+    }
 
     /// A simulated temperature reading, in centi-degrees Celsius: a slow triangle wave around
     /// 21 °C, one step per wake-up.
@@ -400,7 +476,7 @@ mod example {
     /// polling.
     ///
     /// Never returns: a deep sleep ends in a reboot.
-    async fn deep_sleep_when_idle(icd: &Icd) -> Result<(), Error> {
+    async fn deep_sleep_when_idle(matter: &Matter<'_>, icd: &Icd) -> Result<(), Error> {
         loop {
             icd.wait_idle().await;
 
@@ -429,7 +505,104 @@ mod example {
 
             info!("ICD idle: deep-sleeping for {sleep_ms} ms");
 
+            save_clock(matter);
+
             deep_sleep(sleep_ms).map_err(to_net_error)?;
+        }
+    }
+
+    /// Keep what the device knows of the UTC time through a deep sleep: the time in the system
+    /// clock, the rest in RTC RAM.
+    fn save_clock(matter: &Matter<'_>) {
+        // SAFETY: the only access to the static while tasks run, right before the deep sleep.
+        let slept = unsafe { core::ptr::addr_of!(SLEPT_CLOCK).read() };
+
+        let (mut clock, utc_us) = matter.with_state(|state| match state.rtc.utc_time() {
+            UtcTime::Reliable(utc_us) => {
+                // Set this boot by a controller or the Trusted Time Source, not restored.
+                let set = !matches!(
+                    state.rtc.utc_time_source(),
+                    TimeSourceEnum::None | TimeSourceEnum::Unknown
+                );
+
+                let clock = SleptClock {
+                    granularity: state.rtc.utc_time_granularity() as u8,
+                    set_utc_us: if set { utc_us } else { slept.set_utc_us },
+                };
+
+                (clock, Some(utc_us))
+            }
+            UtcTime::LastKnown(_) => (SleptClock::UNKNOWN, None),
+        });
+
+        if let Some(Err(e)) = utc_us.map(set_system_time) {
+            warn!("Cannot set the system clock: {e}");
+            clock = SleptClock::UNKNOWN;
+        }
+
+        // SAFETY: the only access to the static while tasks run, right before the deep sleep.
+        unsafe { core::ptr::addr_of_mut!(SLEPT_CLOCK).write(clock) };
+    }
+
+    /// Whether the time is to be read from the Trusted Time Source: the device has none, or it
+    /// has not been set from a real source for [`TIME_SYNC_EVERY_US`].
+    fn time_sync_due(matter: &Matter<'_>) -> bool {
+        // SAFETY: read-only, while no deep sleep is being prepared.
+        let slept = unsafe { core::ptr::addr_of!(SLEPT_CLOCK).read() };
+
+        match matter.with_state(|state| state.rtc.utc_time()) {
+            UtcTime::Reliable(now_us) => {
+                slept.set_utc_us == 0
+                    || now_us.saturating_sub(slept.set_utc_us) > TIME_SYNC_EVERY_US
+            }
+            UtcTime::LastKnown(_) => true,
+        }
+    }
+
+    /// Restore the UTC time after a deep sleep, from the system clock. Its granularity steps
+    /// down, as for any time set, and its source is unknown: the RTC timer drifts.
+    fn restore_clock(matter: &Matter<'_>) {
+        // SAFETY: the only access to the static while tasks run, before the deep sleep.
+        let slept = unsafe { core::ptr::addr_of!(SLEPT_CLOCK).read() };
+        let granularity = match slept.granularity {
+            4 => GranularityEnum::MicrosecondsGranularity,
+            3 => GranularityEnum::MillisecondsGranularity,
+            2 => GranularityEnum::SecondsGranularity,
+            1 => GranularityEnum::MinutesGranularity,
+            _ => return,
+        };
+
+        let Some(utc_us) = SystemTime::UNIX_EPOCH
+            .elapsed()
+            .ok()
+            .and_then(|unix| unix.checked_sub(Duration::from_secs(MATTER_EPOCH_SECS)))
+            .map(|utc| utc.as_micros() as u64)
+        else {
+            return;
+        };
+
+        matter.with_state(|state| {
+            state
+                .rtc
+                .set_utc_time(utc_us, granularity, TimeSourceEnum::Unknown, &())
+        });
+
+        info!("Clock restored after the deep sleep, {granularity:?}");
+    }
+
+    /// Set the system clock, which the RTC timer keeps running in deep sleep, to `utc_us`
+    /// (Matter-epoch microseconds).
+    fn set_system_time(utc_us: u64) -> std::io::Result<()> {
+        let unix_us = utc_us + MATTER_EPOCH_SECS * 1_000_000;
+        let time = timeval {
+            tv_sec: (unix_us / 1_000_000) as _,
+            tv_usec: (unix_us % 1_000_000) as _,
+        };
+
+        if unsafe { settimeofday(&time, core::ptr::null()) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
         }
     }
 
@@ -525,6 +698,7 @@ mod example {
                 clusters!(
                     thread,
                     sw_diag(heap, watermarks, thread),
+                    time_sync(time_sync_client),
                     thread_diag(
                         mle_counts,
                         mac_counts,
