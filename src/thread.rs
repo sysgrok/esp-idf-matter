@@ -49,7 +49,6 @@ use rs_matter_stack::matter::utils::init::{init, Init};
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
 use rs_matter_stack::matter::utils::select::Coalesce;
 use rs_matter_stack::matter::utils::storage::Vec;
-use rs_matter_stack::matter::utils::sync::DynBase;
 use rs_matter_stack::matter::Matter;
 use rs_matter_stack::mdns::Mdns;
 
@@ -356,8 +355,6 @@ where
         Ok(self.operational.lock(|operational| operational.get()))
     }
 }
-
-impl<M> DynBase for EspMatterThreadCtl<'_, '_, M> where M: NetifMode {}
 
 impl<M> ThreadDiag for EspMatterThreadCtl<'_, '_, M>
 where

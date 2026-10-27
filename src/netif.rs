@@ -16,7 +16,6 @@ use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifDi
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::Error;
 use rs_matter_stack::matter::utils::cell::RefCell;
-use rs_matter_stack::matter::utils::sync::DynBase;
 
 /// A network stack for ESP-IDF
 pub type EspMatterNetStack = edge_nal_std::Stack;
@@ -60,8 +59,6 @@ where
         })
     }
 }
-
-impl<T> DynBase for EspMatterNetif<T> {}
 
 impl<T> NetifDiag for EspMatterNetif<T> {
     fn netifs(&self, f: &mut dyn FnMut(&NetifInfo) -> Result<(), Error>) -> Result<(), Error> {
