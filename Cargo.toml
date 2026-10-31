@@ -11,7 +11,7 @@ repository = "https://github.com/sysgrok/esp-idf-matter"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 build = "build.rs"
-rust-version = "1.85"
+rust-version = "1.92"
 
 #[lib]
 #harness = false
@@ -230,11 +230,8 @@ examples-heap-monitor = []
 
 [dependencies]
 log = { version = "0.4", default-features = false }
-heapless = "0.9"
 enumset = { version = "1", default-features = false }
-embassy-futures = "0.1"
 embassy-sync = "0.8"
-embassy-time = "0.5"
 esp-idf-svc = { version = "0.53", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
 rs-matter-stack = { version = "0.3.1", default-features = false, features = ["std", "log"] }
 async-io = { version = "2.6", default-features = false }

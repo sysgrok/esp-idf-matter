@@ -30,7 +30,6 @@ mod example {
 
     use alloc::sync::Arc;
 
-    use embassy_futures::select::{select, Either};
     use esp_idf_matter::init_async_io;
     use esp_idf_matter::matter::crypto::{default_crypto, Crypto};
     use esp_idf_matter::matter::dm::clusters::app::on_off::test::TestOnOffDeviceLogic;
@@ -44,8 +43,9 @@ mod example {
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
     use esp_idf_matter::matter::error::Error;
     use esp_idf_matter::matter::persist::VENDOR_KEYS_START;
+    use esp_idf_matter::matter::utils::futures::{select, Coalesce, Either};
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
-    use esp_idf_matter::matter::utils::select::Coalesce;
+    use esp_idf_matter::matter::utils::timers::Timer;
     use esp_idf_matter::matter::{clusters, devices, root_endpoint};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::sw_diag::EspSwDiag;
@@ -260,7 +260,7 @@ mod example {
             let _ = pin.wait_for_low().await;
 
             // Debounce
-            embassy_time::Timer::after_millis(50).await;
+            Timer::after_millis(50).await;
 
             if pin.is_low() {
                 warn!(
@@ -268,11 +268,7 @@ mod example {
                     RESET_SECS
                 );
 
-                let result = select(
-                    pin.wait_for_high(),
-                    embassy_time::Timer::after_secs(RESET_SECS),
-                )
-                .await;
+                let result = select(pin.wait_for_high(), Timer::after_secs(RESET_SECS)).await;
 
                 if matches!(result, Either::Second(())) {
                     break;

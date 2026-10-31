@@ -5,10 +5,6 @@ use core::time::Duration;
 
 extern crate alloc;
 
-use embassy_sync;
-use embassy_sync::blocking_mutex;
-use embassy_sync::mutex::Mutex;
-
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::handle::RawHandle as _;
@@ -31,14 +27,16 @@ use rs_matter_stack::matter::dm::clusters::wifi_diag::{
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::{Error, ErrorCode};
 use rs_matter_stack::matter::tlv::Nullable;
+use rs_matter_stack::matter::utils::sync::blocking::Mutex;
+use rs_matter_stack::matter::utils::sync::IfMutex;
 
 use crate::error::to_net_error;
 use crate::netif::{self, EspNetifAccess};
 
 /// This type provides the ESP-IDF Wifi implementation of the Matter `NetCtl`, `NetChangeNotif`, `WirelessDiag`, and `WifiDiag` traits
 pub struct EspMatterWifiCtl<'a> {
-    wifi: Mutex<EspRawMutex, AsyncWifi<EspWifi<'a>>>,
-    operational: blocking_mutex::Mutex<EspRawMutex, Cell<bool>>,
+    wifi: IfMutex<AsyncWifi<EspWifi<'a>>, EspRawMutex>,
+    operational: Mutex<Cell<bool>, EspRawMutex>,
     sysloop: EspSystemEventLoop,
 }
 
@@ -46,8 +44,8 @@ impl<'a> EspMatterWifiCtl<'a> {
     /// Create a new instance of the `EspMatterWifiCtl` type.
     pub const fn new(wifi: AsyncWifi<EspWifi<'a>>, sysloop: EspSystemEventLoop) -> Self {
         Self {
-            wifi: Mutex::new(wifi),
-            operational: blocking_mutex::Mutex::new(Cell::new(false)),
+            wifi: IfMutex::new(wifi),
+            operational: Mutex::new(Cell::new(false)),
             sysloop,
         }
     }

@@ -3,7 +3,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, Ordering};
 
-use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use esp_idf_svc::ble::gap::{conn_find, BleAdvParams, GapEvent};
@@ -27,8 +26,8 @@ use rs_matter_stack::matter::transport::network::btp::{
 };
 use rs_matter_stack::matter::transport::network::BtAddr;
 use rs_matter_stack::matter::utils::cell::RefCell;
+use rs_matter_stack::matter::utils::futures::{select, Coalesce};
 use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::matter::utils::select::Coalesce;
 use rs_matter_stack::matter::utils::storage::Vec;
 use rs_matter_stack::matter::utils::sync::blocking::Mutex;
 use rs_matter_stack::matter::utils::sync::Signal;
@@ -671,7 +670,6 @@ pub use central::{EspBtpGattClient, EspBtpGattClientContext};
 mod central {
     use core::sync::atomic::{AtomicPtr, Ordering};
 
-    use embassy_futures::select::select;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
     use esp_idf_svc::ble::gap::GapEvent;
@@ -686,8 +684,8 @@ mod central {
     use rs_matter_stack::matter::transport::network::btp::Btp;
     use rs_matter_stack::matter::transport::network::BtAddr;
     use rs_matter_stack::matter::utils::cell::RefCell;
+    use rs_matter_stack::matter::utils::futures::{select, Coalesce};
     use rs_matter_stack::matter::utils::init::{init, Init};
-    use rs_matter_stack::matter::utils::select::Coalesce;
     use rs_matter_stack::matter::utils::storage::Vec;
     use rs_matter_stack::matter::utils::sync::blocking::Mutex;
     use rs_matter_stack::matter::utils::sync::Signal;

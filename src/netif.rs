@@ -5,8 +5,6 @@ use core::borrow::Borrow;
 use core::future::Future;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-use embassy_sync::{self, blocking_mutex};
-
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::netif::EspNetif;
@@ -16,6 +14,8 @@ use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifDi
 use rs_matter_stack::matter::dm::networks::NetChangeNotif;
 use rs_matter_stack::matter::error::Error;
 use rs_matter_stack::matter::utils::cell::RefCell;
+use rs_matter_stack::matter::utils::storage::String;
+use rs_matter_stack::matter::utils::sync::blocking::Mutex;
 
 /// A network stack for ESP-IDF
 pub type EspMatterNetStack = edge_nal_std::Stack;
@@ -25,7 +25,7 @@ pub struct EspMatterNetif<T> {
     netif_access: T,
     sysloop: EspSystemEventLoop,
     netif_type: InterfaceTypeEnum,
-    netif_state: blocking_mutex::Mutex<EspRawMutex, RefCell<NetifInfoOwned>>,
+    netif_state: Mutex<RefCell<NetifInfoOwned>, EspRawMutex>,
 }
 
 impl<T> EspMatterNetif<T>
@@ -42,7 +42,7 @@ where
             netif_access,
             netif_type,
             sysloop,
-            netif_state: blocking_mutex::Mutex::new(RefCell::new(NetifInfoOwned::new())),
+            netif_state: Mutex::new(RefCell::new(NetifInfoOwned::new())),
         }
     }
 
@@ -139,7 +139,7 @@ impl EspNetifAccess for &EspNetif {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct NetifInfoOwned {
-    name: heapless::String<6>,
+    name: String<6>,
     operational: bool,
     hw_addr: [u8; 8],
     ipv4_addr: Ipv4Addr,
@@ -152,7 +152,7 @@ pub(crate) struct NetifInfoOwned {
 impl NetifInfoOwned {
     pub(crate) const fn new() -> Self {
         Self {
-            name: heapless::String::new(),
+            name: String::new(),
             operational: false,
             hw_addr: [0; 8],
             ipv4_addr: Ipv4Addr::UNSPECIFIED,
@@ -255,11 +255,9 @@ pub mod utils {
 
     use alloc::sync::Arc;
 
-    use embassy_futures::select::select;
-    use embassy_time::{Duration, Timer};
+    use rs_matter_stack::matter::utils::futures::select;
+    use rs_matter_stack::matter::utils::timers::{Duration, Timer};
 
-    // This `Notification` is one of rs-matter's, hence parameterized with a
-    // `RawMutex` from embassy-sync 0.8 (rather than the 0.7 `EspRawMutex`).
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
     use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -271,6 +269,7 @@ pub mod utils {
     };
 
     use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifInfo};
+    use rs_matter_stack::matter::utils::storage::Vec;
     use rs_matter_stack::matter::utils::sync::Notification;
 
     extern crate alloc;
@@ -305,8 +304,7 @@ pub mod utils {
         let ipv6_addrs = {
             let mut raw: [esp_ip6_addr_t; LWIP_IPV6_NUM_ADDRESSES as usize] = Default::default();
 
-            let mut ipv6_addrs =
-                heapless::Vec::<Ipv6Addr, { LWIP_IPV6_NUM_ADDRESSES as usize }>::new();
+            let mut ipv6_addrs = Vec::<Ipv6Addr, { LWIP_IPV6_NUM_ADDRESSES as usize }>::new();
 
             let count =
                 unsafe { esp_netif_get_all_preferred_ip6(netif.handle() as _, raw.as_mut_ptr()) };

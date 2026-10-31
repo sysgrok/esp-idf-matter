@@ -2,8 +2,6 @@ use core::pin::pin;
 
 use alloc::sync::Arc;
 
-use embassy_futures::select::select;
-
 #[cfg(esp_idf_bt_bluedroid_enabled)]
 use esp_idf_svc::bt::{self, BtDriver};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -18,7 +16,7 @@ use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
 use rs_matter_stack::matter::dm::clusters::icd_mgmt::{Icd, IcdNetParams};
 use rs_matter_stack::matter::dm::networks::wireless::{Thread, ThreadNetworks};
 use rs_matter_stack::matter::error::Error;
-use rs_matter_stack::matter::utils::select::Coalesce;
+use rs_matter_stack::matter::utils::futures::{select, Coalesce};
 
 use rs_matter_stack::network::{Embedding, Network};
 use rs_matter_stack::wireless::{

@@ -9,10 +9,11 @@ use log::{debug, trace};
 
 use rs_matter_stack::matter::error::Error;
 use rs_matter_stack::matter::persist::KvBlobStore;
+use rs_matter_stack::matter::utils::storage::String;
 
 use crate::error::to_persist_error;
 
-type SKey = heapless::String<5>;
+type SKey = String<5>;
 
 /// A `KvBlobStore`` implementation that uses the ESP IDF NVS API
 /// to store and load the BLOBs.

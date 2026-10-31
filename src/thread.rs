@@ -9,11 +9,7 @@ use core::pin::pin;
 
 use alloc::sync::Arc;
 
-#[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use embassy_futures::select::{select, select3};
-use embassy_sync;
-use embassy_sync::blocking_mutex::{self, raw::CriticalSectionRawMutex};
-use embassy_sync::mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
@@ -45,10 +41,13 @@ use rs_matter_stack::matter::transport::network::MatterLocalService;
 use rs_matter_stack::matter::transport::network::MatterRemoteService;
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
 use rs_matter_stack::matter::transport::MdnsResponder;
-use rs_matter_stack::matter::utils::init::{init, Init};
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use rs_matter_stack::matter::utils::select::Coalesce;
-use rs_matter_stack::matter::utils::storage::Vec;
+use rs_matter_stack::matter::utils::futures::{select, select3, Coalesce};
+use rs_matter_stack::matter::utils::init::{init, Init};
+use rs_matter_stack::matter::utils::storage::{String, Vec};
+use rs_matter_stack::matter::utils::sync::blocking::Mutex;
+use rs_matter_stack::matter::utils::sync::IfMutex;
+use rs_matter_stack::matter::utils::timers::{Duration, Instant, Timer};
 use rs_matter_stack::matter::Matter;
 use rs_matter_stack::mdns::Mdns;
 
@@ -64,10 +63,10 @@ pub struct EspMatterThreadCtl<'a, 'd, M>
 where
     M: NetifMode,
 {
-    thread: Mutex<EspRawMutex, &'a EspThread<'d, M>>,
+    thread: IfMutex<&'a EspThread<'d, M>, EspRawMutex>,
     // Unlocked access for the (sync) diagnostics, which only do short OpenThread reads
     diag: &'a EspThread<'d, M>,
-    operational: blocking_mutex::Mutex<EspRawMutex, Cell<bool>>,
+    operational: Mutex<Cell<bool>, EspRawMutex>,
     sysloop: EspSystemEventLoop,
 }
 
@@ -78,9 +77,9 @@ where
     /// Create a new instance of the `EspMatterThreadCtl` type.
     pub fn new(thread: &'a EspThread<'d, M>, sysloop: EspSystemEventLoop) -> Self {
         Self {
-            thread: Mutex::new(thread),
+            thread: IfMutex::new(thread),
             diag: thread,
-            operational: blocking_mutex::Mutex::new(Cell::new(false)),
+            operational: Mutex::new(Cell::new(false)),
             sysloop,
         }
     }
@@ -145,14 +144,14 @@ where
     where
         F: FnMut(&NetworkScanInfo) -> Result<(), Error>,
     {
-        const POLL_SCAN_WAIT: embassy_time::Duration = embassy_time::Duration::from_millis(500);
+        const POLL_SCAN_WAIT: Duration = Duration::from_millis(500);
 
         let thread = self.thread.lock().await;
 
         struct OwnedScanResult {
             pan_id: u16,
             ext_pan_id: u64,
-            network_name: heapless::String<16>,
+            network_name: String<16>,
             channel: u16,
             version: u8,
             ext_addr: [u8; 8],
@@ -195,9 +194,9 @@ where
             }
         }
 
-        let scan_result = Arc::new(blocking_mutex::Mutex::<CriticalSectionRawMutex, _>::new(
-            RefCell::new(Some(heapless::Vec::<_, 5>::new())),
-        ));
+        let scan_result = Arc::new(Mutex::<_, CriticalSectionRawMutex>::new(RefCell::new(
+            Some(Vec::<_, 5>::new()),
+        )));
 
         {
             let scan_result = scan_result.clone();
@@ -222,7 +221,7 @@ where
                 break;
             }
 
-            embassy_time::Timer::after(POLL_SCAN_WAIT).await;
+            Timer::after(POLL_SCAN_WAIT).await;
         }
 
         let results = scan_result
@@ -251,8 +250,8 @@ where
     }
 
     async fn connect(&self, creds: &WirelessCreds<'_>) -> Result<(), NetCtlError> {
-        const CONNECT_WAIT: embassy_time::Duration = embassy_time::Duration::from_millis(30000);
-        const POLL_CONNECT_WAIT: embassy_time::Duration = embassy_time::Duration::from_millis(1000);
+        const CONNECT_WAIT: Duration = Duration::from_millis(30000);
+        const POLL_CONNECT_WAIT: Duration = Duration::from_millis(1000);
 
         let WirelessCreds::Thread { dataset_tlv } = creds else {
             return Err(NetCtlError::Other(ErrorCode::InvalidData.into()));
@@ -270,7 +269,7 @@ where
 
         thread.enable_thread(true).map_err(to_net_error)?;
 
-        let connect_attempt_time = embassy_time::Instant::now();
+        let connect_attempt_time = Instant::now();
 
         let result = loop {
             let operational = Self::fetch_is_operational(&thread).map_err(to_net_error)?;
@@ -283,7 +282,7 @@ where
                 break Err(NetCtlError::AuthFailure);
             }
 
-            embassy_time::Timer::after(POLL_CONNECT_WAIT).await;
+            Timer::after(POLL_CONNECT_WAIT).await;
         };
 
         match result {
@@ -756,7 +755,7 @@ where
             }
         };
 
-        let mut hostname = heapless::String::<16>::new();
+        let mut hostname = String::<16>::new();
         write!(
             hostname,
             "{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
@@ -879,7 +878,7 @@ where
 
             // The DNS-SD server of the Border Router serves the Thread domain
             // `default.service.arpa`, not mDNS `local`
-            let mut label = heapless::String::<33>::new();
+            let mut label = String::<33>::new();
             let service_name = match service {
                 MatterRemoteService::Operational {
                     compressed_fabric_id,
@@ -895,7 +894,7 @@ where
             };
 
             // ... while `rs-matter` matches answers by their mDNS `local` name
-            let mut instance_name = heapless::String::<128>::new();
+            let mut instance_name = String::<128>::new();
             service.instance_name(&mut instance_name);
 
             match thread
@@ -928,10 +927,10 @@ where
         loop {
             let query = responder.wait_browse_request().await;
 
-            let mut service_type = heapless::String::<64>::new();
+            let mut service_type = String::<64>::new();
             query.service_type(&mut service_type, false);
 
-            let mut service_name = heapless::String::<96>::new();
+            let mut service_name = String::<96>::new();
             let _ = write!(service_name, "{service_type}.default.service.arpa");
 
             let instances = match thread.dns_browse(&service_name).await {
@@ -949,7 +948,7 @@ where
                     continue;
                 }
 
-                let mut instance_name = heapless::String::<96>::new();
+                let mut instance_name = String::<96>::new();
                 let _ = write!(
                     instance_name,
                     "{}.{}.local",

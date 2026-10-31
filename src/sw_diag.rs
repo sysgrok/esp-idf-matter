@@ -97,6 +97,7 @@ mod tasks {
 
     use rs_matter_stack::matter::dm::clusters::sw_diag::ThreadMetric;
     use rs_matter_stack::matter::error::Error;
+    use rs_matter_stack::matter::utils::storage::String;
 
     /// The longest thread name Matter allows
     const MAX_NAME_LEN: usize = 8;
@@ -110,7 +111,7 @@ mod tasks {
         let capacity = unsafe { uxTaskGetNumberOfTasks() } as usize + EXTRA_TASKS;
 
         let mut tasks = Vec::<TaskStatus_t>::with_capacity(capacity);
-        let mut names = Vec::<heapless::String<MAX_NAME_LEN>>::with_capacity(capacity);
+        let mut names = Vec::<String<MAX_NAME_LEN>>::with_capacity(capacity);
 
         unsafe {
             vTaskSuspendAll();
@@ -142,10 +143,10 @@ mod tasks {
         Ok(())
     }
 
-    fn name_prefix(name: &CStr) -> heapless::String<MAX_NAME_LEN> {
+    fn name_prefix(name: &CStr) -> String<MAX_NAME_LEN> {
         let name = name.to_str().unwrap_or("");
 
-        let mut prefix = heapless::String::new();
+        let mut prefix = String::new();
         for ch in name.chars() {
             if prefix.push(ch).is_err() {
                 break;

@@ -54,8 +54,7 @@ mod example {
 
     use alloc::sync::Arc;
 
-    use embassy_futures::select::{select, select3, Either};
-    use embassy_time::{Instant, Timer};
+    use esp_idf_matter::matter::utils::timers::{Instant, Timer};
 
     use esp_idf_matter::error::to_net_error;
     use esp_idf_matter::init_async_io;
@@ -85,8 +84,8 @@ mod example {
     use esp_idf_matter::matter::error::{Error, ErrorCode};
     use esp_idf_matter::matter::tlv::Nullable;
     use esp_idf_matter::matter::utils::epoch::MATTER_EPOCH_SECS;
+    use esp_idf_matter::matter::utils::futures::{select, select3, Coalesce, Either};
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
-    use esp_idf_matter::matter::utils::select::Coalesce;
     use esp_idf_matter::matter::{clusters, devices, with, Matter};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::sw_diag::EspSwDiag;

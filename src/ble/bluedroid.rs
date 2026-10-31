@@ -5,7 +5,6 @@ use core::fmt::Debug;
 
 use alloc::borrow::ToOwned;
 
-use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use enumset::enum_set;
@@ -29,8 +28,8 @@ use rs_matter_stack::matter::transport::network::btp::{
 };
 use rs_matter_stack::matter::transport::network::BtAddr;
 use rs_matter_stack::matter::utils::cell::RefCell;
+use rs_matter_stack::matter::utils::futures::{select, Coalesce};
 use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::matter::utils::select::Coalesce;
 use rs_matter_stack::matter::utils::storage::Vec;
 use rs_matter_stack::matter::utils::sync::blocking::Mutex;
 use rs_matter_stack::matter::utils::sync::Signal;
@@ -587,7 +586,7 @@ where
 
         self.gap.set_device_name(service_name)?;
         self.gap
-            .set_raw_adv_conf(&service_adv_data.iter().collect::<heapless::Vec<_, 32>>())?;
+            .set_raw_adv_conf(&service_adv_data.iter().collect::<Vec<_, 32>>())?;
         self.gatts.create_service(
             gatt_if,
             &GattServiceId {
