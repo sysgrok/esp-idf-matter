@@ -69,9 +69,7 @@ mod example {
         OperatingModeEnum,
     };
     use esp_idf_matter::matter::dm::clusters::time_sync::client::TimeSyncClient;
-    use esp_idf_matter::matter::dm::clusters::time_sync::{
-        GranularityEnum, TimeSourceEnum, UtcTime,
-    };
+    use esp_idf_matter::matter::dm::clusters::time_sync::{TimeGranularity, TimeSource, UtcTime};
     use esp_idf_matter::matter::dm::devices::test::{
         DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET,
     };
@@ -269,6 +267,7 @@ mod example {
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
                 Async(EspThreadMatterStack::<0, ()>::root_handler(
+                    stack.matter(),
                     &EspSwDiag,
                     &mut weak_rand,
                 )),
@@ -277,7 +276,10 @@ mod example {
             // power mode state machine and sends the Check-In messages.
             .chain(
                 |e, c| e == ROOT_ENDPOINT_ID && c == ICD_MGMT_CLUSTER.id,
-                Async(LitIcdMgmtHandler::new(Dataver::new_rand(&mut weak_rand), lit).adapt()),
+                Async(
+                    LitIcdMgmtHandler::new(Dataver::new_rand(&mut weak_rand), stack.matter(), lit)
+                        .adapt(),
+                ),
             )
             // Our temperature sensor, on Endpoint 1
             .chain(
@@ -290,7 +292,7 @@ mod example {
                 Async(desc::DescHandler::new(Dataver::new_rand(&mut weak_rand)).adapt()),
             )
             // Reads the time from the Trusted Time Source when due; serves no cluster.
-            .chain(|_, _| false, ClockKeeper);
+            .chain(|_, _| false, ClockKeeper(stack.matter()));
 
         // An NVS-backed KV BLOB store: an ICD has to remember its fabrics, its ICD
         // registrations, its CASE resumption records and its subscriptions across reboots.
@@ -365,7 +367,7 @@ mod example {
     /// system clock.
     #[derive(Clone, Copy)]
     struct SleptClock {
-        /// Its `GranularityEnum`; `NoTimeGranularity` if it did not know the time.
+        /// Its `TimeGranularity`; `NoTimeGranularity` if it did not know the time.
         granularity: u8,
         /// When the time was last set from a real source (a controller, or the Trusted Time
         /// Source), Matter-epoch microseconds; 0 if not since a cold boot.
@@ -374,7 +376,7 @@ mod example {
 
     impl SleptClock {
         const UNKNOWN: Self = Self {
-            granularity: GranularityEnum::NoTimeGranularity as u8,
+            granularity: TimeGranularity::NoTime as u8,
             set_utc_us: 0,
         };
     }
@@ -383,9 +385,9 @@ mod example {
     /// set from a real source for [`TIME_SYNC_EVERY_US`]: not on every wake-up, which would cost
     /// a CASE session each.
     #[derive(Clone, Copy)]
-    struct ClockKeeper;
+    struct ClockKeeper<'a>(&'a Matter<'a>);
 
-    impl AsyncHandler for ClockKeeper {
+    impl AsyncHandler for ClockKeeper<'_> {
         async fn read(&self, _ctx: impl ReadContext, _reply: impl ReadReply) -> Result<(), Error> {
             Err(ErrorCode::AttributeNotFound.into())
         }
@@ -393,10 +395,10 @@ mod example {
         fn bump_dataver(&self, _ctx: impl MatchContext) {}
 
         async fn run(&self, ctx: impl HandlerContext) -> Result<(), Error> {
-            if time_sync_due(ctx.matter()) {
+            if time_sync_due(self.0) {
                 info!("Reading the time from the Trusted Time Source");
 
-                let client = TimeSyncClient::new(ctx.matter(), ctx.crypto());
+                let client = TimeSyncClient::new(self.0, ctx.crypto());
                 if let Err(e) = client.refresh_once(ctx.kv(), &ctx).await {
                     warn!("No time from the Trusted Time Source: {e:?}");
                 }
@@ -521,7 +523,7 @@ mod example {
                 // Set this boot by a controller or the Trusted Time Source, not restored.
                 let set = !matches!(
                     state.rtc.utc_time_source(),
-                    TimeSourceEnum::None | TimeSourceEnum::Unknown
+                    TimeSource::None | TimeSource::Unknown
                 );
 
                 let clock = SleptClock {
@@ -564,10 +566,10 @@ mod example {
         // SAFETY: the only access to the static while tasks run, before the deep sleep.
         let slept = unsafe { core::ptr::addr_of!(SLEPT_CLOCK).read() };
         let granularity = match slept.granularity {
-            4 => GranularityEnum::MicrosecondsGranularity,
-            3 => GranularityEnum::MillisecondsGranularity,
-            2 => GranularityEnum::SecondsGranularity,
-            1 => GranularityEnum::MinutesGranularity,
+            4 => TimeGranularity::Microseconds,
+            3 => TimeGranularity::Milliseconds,
+            2 => TimeGranularity::Seconds,
+            1 => TimeGranularity::Minutes,
             _ => return,
         };
 
@@ -583,7 +585,7 @@ mod example {
         matter.with_state(|state| {
             state
                 .rtc
-                .set_utc_time(utc_us, granularity, TimeSourceEnum::Unknown, &())
+                .set_utc_time(utc_us, granularity, TimeSource::Unknown, &())
         });
 
         info!("Clock restored after the deep sleep, {granularity:?}");

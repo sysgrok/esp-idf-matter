@@ -150,6 +150,7 @@ mod example {
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
                 Async(EspWifiMatterStack::<0, ()>::root_handler(
+                    stack.matter(),
                     &EspSwDiag,
                     &mut weak_rand,
                 )),

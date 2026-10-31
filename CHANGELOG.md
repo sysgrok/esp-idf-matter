@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Breaking: update to the `rs-matter` split into crates; `root_handler` takes the `Matter` instance, as per `rs-matter-stack`
 - Raise MSRV to 1.92, as per `rs-matter`
 - Use `rs-matter`'s `utils::futures`, `utils::timers`, `utils::storage` and `utils::sync` instead of `embassy-futures`, `embassy-time`, `heapless` and the `embassy-sync` mutexes
 - Fix: a Thread ICD's child timeout follows its slowest polling interval as the ICD sets it, not as it was when Thread came up, so that the parent keeps a LIT child between its polls
