@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Breaking: move to `rs_matter::stack`, in place of the `rs-matter-stack` crate; `rs-matter-stack`, `edge-nal` and `edge-nal-std` are gone, and `EspMatterNetStack` is a type of its own
 - Breaking: update to the `rs-matter` split into crates; `root_handler` takes the `Matter` instance, as per `rs-matter-stack`
 - Raise MSRV to 1.92, as per `rs-matter`
 - Use `rs-matter`'s `utils::futures`, `utils::timers`, `utils::storage` and `utils::sync` instead of `embassy-futures`, `embassy-time`, `heapless` and the `embassy-sync` mutexes

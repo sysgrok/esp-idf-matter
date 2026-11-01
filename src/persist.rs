@@ -7,9 +7,9 @@ use esp_idf_svc::sys::EspError;
 
 use log::{debug, trace};
 
-use rs_matter_stack::matter::error::Error;
-use rs_matter_stack::matter::persist::KvBlobStore;
-use rs_matter_stack::matter::utils::storage::String;
+use rs_matter::error::Error;
+use rs_matter::persist::KvBlobStore;
+use rs_matter::utils::storage::String;
 
 use crate::error::to_persist_error;
 

@@ -2,7 +2,7 @@
 
 use esp_idf_svc::sys::EspError;
 
-use rs_matter_stack::matter::error::{Error, ErrorCode};
+use rs_matter::error::{Error, ErrorCode};
 
 /// Converts an ESP network error to an `rs-matter` error
 pub fn to_net_error(err: EspError) -> Error {

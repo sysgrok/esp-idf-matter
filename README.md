@@ -9,7 +9,7 @@
 
 Everything necessary to run [`rs-matter`](https://github.com/project-chip/rs-matter) on the ESP-IDF:
 * Bluedroid implementation of `rs-matter`'s `GattPeripheral` for BLE comissioning support.
-* [`rs-matter-stack`](https://github.com/ivmarkov/rs-matter-stack) support with `Netif`, `Ble`, `Wireless` (all of Wifi / Thread / Ethernet) and `KvBlobStore` implementations.
+* `rs_matter::stack` support with `Netif`, `Ble`, `Wireless` (all of Wifi / Thread / Ethernet) and `KvBlobStore` implementations.
 
 Since ESP-IDF does support the Rust Standard Library, UDP networking just works.
 

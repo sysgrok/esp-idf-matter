@@ -6,16 +6,16 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::timer::EspTaskTimerService;
 use esp_idf_svc::wifi::{AsyncWifi, EspWifi};
 
-use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::networks::wireless::{Wifi, WifiNetworks};
-use rs_matter_stack::matter::error::Error;
+use rs_matter::dm::clusters::gen_diag::InterfaceTypeEnum;
+use rs_matter::dm::networks::wireless::{Wifi, WifiNetworks};
+use rs_matter::error::Error;
 
-use rs_matter_stack::matter::transport::network::mdns::builtin::BuiltinMdns;
-use rs_matter_stack::mdns::Mdns;
-use rs_matter_stack::network::{Embedding, Network};
-use rs_matter_stack::wireless::{
-    Gatt, GattTask, WifiCoex, WifiCoexTask, WifiTask, MAX_WIRELESS_NETWORKS,
+use rs_matter::stack::mdns::Mdns;
+use rs_matter::stack::network::{Embedding, Network};
+use rs_matter::stack::wireless::{
+    GattDriver, GattTask, WifiCoexDriver, WifiCoexTask, WifiDriver, WifiTask, MAX_WIRELESS_NETWORKS,
 };
+use rs_matter::transport::network::mdns::builtin::BuiltinMdns;
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
 use crate::error::to_net_error;
@@ -106,7 +106,7 @@ where
     }
 }
 
-impl Gatt for EspMatterWifi<'_, '_> {
+impl GattDriver for EspMatterWifi<'_, '_> {
     async fn run<A>(&mut self, mut task: A) -> Result<(), Error>
     where
         A: GattTask,
@@ -127,7 +127,7 @@ impl Gatt for EspMatterWifi<'_, '_> {
     }
 }
 
-impl rs_matter_stack::wireless::Wifi for EspMatterWifi<'_, '_> {
+impl WifiDriver for EspMatterWifi<'_, '_> {
     // The operational task receives `&wifi` (a `&EspMatterWifiCtl`), so the chain
     // net-ctl type — and hence this associated type — is `&'a EspMatterWifiCtl<'a>`.
     // Naming it here lets the commissioning and operational handler chains share one
@@ -165,7 +165,7 @@ impl rs_matter_stack::wireless::Wifi for EspMatterWifi<'_, '_> {
     }
 }
 
-impl WifiCoex for EspMatterWifi<'_, '_> {
+impl WifiCoexDriver for EspMatterWifi<'_, '_> {
     async fn run<A>(&mut self, mut task: A) -> Result<(), Error>
     where
         A: WifiCoexTask,

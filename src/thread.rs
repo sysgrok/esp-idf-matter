@@ -21,35 +21,36 @@ use esp_idf_svc::thread::{
 
 use log::{debug, error, info, warn};
 
-use rs_matter_stack::matter::crypto::Crypto;
-use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::clusters::net_comm::{
+use rs_matter::crypto::Crypto;
+use rs_matter::dm::clusters::gen_diag::InterfaceTypeEnum;
+use rs_matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
-use rs_matter_stack::matter::dm::clusters::thread_diag::{
+use rs_matter::dm::clusters::thread_diag::{
     MacCounters, MleCounters, NeighborTable, NetworkFaultEnum, OperationalDatasetComponents,
     RouteTable, RoutingRoleEnum, SecurityPolicy, ThreadDiag,
 };
-use rs_matter_stack::matter::dm::clusters::wifi_diag::WirelessDiag;
-use rs_matter_stack::matter::dm::networks::NetChangeNotif;
-use rs_matter_stack::matter::error::{Error, ErrorCode};
-use rs_matter_stack::matter::fabric::MAX_FABRICS;
+use rs_matter::dm::clusters::wifi_diag::WirelessDiag;
+use rs_matter::dm::networks::NetChangeNotif;
+use rs_matter::error::{Error, ErrorCode};
+use rs_matter::fabric::MAX_FABRICS;
+use rs_matter::stack::mdns::Mdns;
+use rs_matter::stack::net::NetStack;
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use rs_matter_stack::matter::transport::network::mdns::{DottedName, MdnsRemoteService, MdnsTxt};
-use rs_matter_stack::matter::transport::network::MatterLocalService;
+use rs_matter::transport::network::mdns::{DottedName, MdnsRemoteService, MdnsTxt};
+use rs_matter::transport::network::MatterLocalService;
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use rs_matter_stack::matter::transport::network::MatterRemoteService;
+use rs_matter::transport::network::MatterRemoteService;
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use rs_matter_stack::matter::transport::MdnsResponder;
+use rs_matter::transport::MdnsResponder;
 #[cfg(all(esp_idf_openthread_dns_client, not(esp_idf_version_major = "4")))]
-use rs_matter_stack::matter::utils::futures::{select, select3, Coalesce};
-use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::matter::utils::storage::{String, Vec};
-use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-use rs_matter_stack::matter::utils::sync::IfMutex;
-use rs_matter_stack::matter::utils::timers::{Duration, Instant, Timer};
-use rs_matter_stack::matter::Matter;
-use rs_matter_stack::mdns::Mdns;
+use rs_matter::utils::futures::{select, select3, Coalesce};
+use rs_matter::utils::init::{init, Init};
+use rs_matter::utils::storage::{String, Vec};
+use rs_matter::utils::sync::blocking::Mutex;
+use rs_matter::utils::sync::IfMutex;
+use rs_matter::utils::timers::{Duration, Instant, Timer};
+use rs_matter::Matter;
 
 use crate::error::to_net_error;
 use crate::netif::{self, EspNetifAccess};
@@ -1101,8 +1102,8 @@ where
     async fn run<C, U>(
         &mut self,
         matter: &Matter<'_>,
-        _crypto: C,
-        _udp: U,
+        _crypto: &C,
+        _net_stack: &U,
         _mac: &[u8],
         _ipv4: core::net::Ipv4Addr,
         ipv6: &[core::net::Ipv6Addr],
@@ -1110,7 +1111,7 @@ where
     ) -> Result<(), Error>
     where
         C: Crypto,
-        U: edge_nal::UdpBind,
+        U: NetStack,
     {
         Self::run(self, matter, ipv6).await
     }

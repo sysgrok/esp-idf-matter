@@ -20,19 +20,19 @@ use esp_idf_svc::sys::{EspError, ESP_FAIL};
 
 use log::{error, info, trace, warn};
 
-use rs_matter_stack::ble::GattPeripheral;
-use rs_matter_stack::matter::error::{Error, ErrorCode};
-use rs_matter_stack::matter::transport::network::btp::{
+use rs_matter::error::{Error, ErrorCode};
+use rs_matter::stack::ble::GattPeripheral;
+use rs_matter::transport::network::btp::{
     AdvData, Btp, C1_CHARACTERISTIC_UUID, C1_MAX_LEN, C2_CHARACTERISTIC_UUID, C2_MAX_LEN,
     MATTER_BLE_SERVICE_UUID16,
 };
-use rs_matter_stack::matter::transport::network::BtAddr;
-use rs_matter_stack::matter::utils::cell::RefCell;
-use rs_matter_stack::matter::utils::futures::{select, Coalesce};
-use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::matter::utils::storage::Vec;
-use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-use rs_matter_stack::matter::utils::sync::Signal;
+use rs_matter::transport::network::BtAddr;
+use rs_matter::utils::cell::RefCell;
+use rs_matter::utils::futures::{select, Coalesce};
+use rs_matter::utils::init::{init, Init};
+use rs_matter::utils::storage::Vec;
+use rs_matter::utils::sync::blocking::Mutex;
+use rs_matter::utils::sync::Signal;
 
 const MAX_MTU_SIZE: usize = 512;
 
@@ -906,7 +906,7 @@ mod gatt_response {
     use esp_idf_svc::bt::ble::gatt::GattResponse;
     use esp_idf_svc::sys::{esp_gatt_rsp_t, esp_gatt_value_t};
 
-    use rs_matter_stack::matter::utils::init::{init, init_from_closure, zeroed, Init};
+    use rs_matter::utils::init::{init, init_from_closure, zeroed, Init};
 
     /// Return an in-place initializer for `GattResponse`.
     ///
