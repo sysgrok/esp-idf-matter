@@ -1,7 +1,7 @@
 //! This module provides the ESP-IDF implementation of the Ethernet Matter stack.
 
-use rs_matter_stack::eth::Eth;
-use rs_matter_stack::MatterStack;
+use rs_matter::stack::eth::Eth;
+use rs_matter::stack::MatterStack;
 
 #[cfg(all(esp_idf_comp_esp_eth_enabled, esp_idf_comp_esp_event_enabled))]
 #[cfg(any(
@@ -31,8 +31,8 @@ pub use diag::*;
 mod diag {
     use esp_idf_svc::eth::{Duplex, EthDriver, Speed};
 
-    use rs_matter_stack::matter::dm::clusters::eth_diag::{EthDiag, PHYRateEnum};
-    use rs_matter_stack::matter::error::Error;
+    use rs_matter::dm::clusters::eth_diag::{EthDiag, PHYRateEnum};
+    use rs_matter::error::Error;
 
     use crate::error::to_net_error;
 

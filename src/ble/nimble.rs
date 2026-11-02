@@ -18,19 +18,19 @@ use esp_idf_svc::sys::{
 
 use ::log::{error, info, trace, warn};
 
-use rs_matter_stack::ble::GattPeripheral;
-use rs_matter_stack::matter::error::{Error, ErrorCode};
-use rs_matter_stack::matter::transport::network::btp::{
+use rs_matter::error::{Error, ErrorCode};
+use rs_matter::stack::ble::GattPeripheral;
+use rs_matter::transport::network::btp::{
     AdvData, Btp, C1_CHARACTERISTIC_UUID, C2_CHARACTERISTIC_UUID, C3_CHARACTERISTIC_UUID,
     MATTER_BLE_SERVICE_UUID16,
 };
-use rs_matter_stack::matter::transport::network::BtAddr;
-use rs_matter_stack::matter::utils::cell::RefCell;
-use rs_matter_stack::matter::utils::futures::{select, Coalesce};
-use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::matter::utils::storage::Vec;
-use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-use rs_matter_stack::matter::utils::sync::Signal;
+use rs_matter::transport::network::BtAddr;
+use rs_matter::utils::cell::RefCell;
+use rs_matter::utils::futures::{select, Coalesce};
+use rs_matter::utils::init::{init, Init};
+use rs_matter::utils::storage::Vec;
+use rs_matter::utils::sync::blocking::Mutex;
+use rs_matter::utils::sync::Signal;
 
 /// A size which is enough to accommodate the maximum BTP payload plus the GATT header.
 const MAX_MTU_SIZE: usize = 512;
@@ -680,15 +680,15 @@ mod central {
 
     use ::log::{error, info, trace};
 
-    use rs_matter_stack::matter::error::{Error, ErrorCode};
-    use rs_matter_stack::matter::transport::network::btp::Btp;
-    use rs_matter_stack::matter::transport::network::BtAddr;
-    use rs_matter_stack::matter::utils::cell::RefCell;
-    use rs_matter_stack::matter::utils::futures::{select, Coalesce};
-    use rs_matter_stack::matter::utils::init::{init, Init};
-    use rs_matter_stack::matter::utils::storage::Vec;
-    use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-    use rs_matter_stack::matter::utils::sync::Signal;
+    use rs_matter::error::{Error, ErrorCode};
+    use rs_matter::transport::network::btp::Btp;
+    use rs_matter::transport::network::BtAddr;
+    use rs_matter::utils::cell::RefCell;
+    use rs_matter::utils::futures::{select, Coalesce};
+    use rs_matter::utils::init::{init, Init};
+    use rs_matter::utils::storage::Vec;
+    use rs_matter::utils::sync::blocking::Mutex;
+    use rs_matter::utils::sync::Signal;
 
     use super::{to_matter_err, to_matter_err_ble, C1_UUID, C2_UUID, MAX_MTU_SIZE, SVC_UUID};
 

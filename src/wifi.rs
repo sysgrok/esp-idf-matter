@@ -16,19 +16,19 @@ use esp_idf_svc::wifi::{
 };
 
 use log::{info, warn};
-use rs_matter_stack::matter::dm::clusters::decl::general_diagnostics::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::clusters::net_comm::{
+use rs_matter::dm::clusters::decl::general_diagnostics::InterfaceTypeEnum;
+use rs_matter::dm::clusters::net_comm::{
     NetCtl, NetCtlError, NetworkScanInfo, NetworkType, WirelessCreds,
 };
-use rs_matter_stack::matter::dm::clusters::net_comm::{WiFiBandEnum, WiFiSecurityBitmap};
-use rs_matter_stack::matter::dm::clusters::wifi_diag::{
+use rs_matter::dm::clusters::net_comm::{WiFiBandEnum, WiFiSecurityBitmap};
+use rs_matter::dm::clusters::wifi_diag::{
     SecurityTypeEnum, WiFiVersionEnum, WifiDiag, WirelessDiag,
 };
-use rs_matter_stack::matter::dm::networks::NetChangeNotif;
-use rs_matter_stack::matter::error::{Error, ErrorCode};
-use rs_matter_stack::matter::tlv::Nullable;
-use rs_matter_stack::matter::utils::sync::blocking::Mutex;
-use rs_matter_stack::matter::utils::sync::IfMutex;
+use rs_matter::dm::networks::NetChangeNotif;
+use rs_matter::error::{Error, ErrorCode};
+use rs_matter::tlv::Nullable;
+use rs_matter::utils::sync::blocking::Mutex;
+use rs_matter::utils::sync::IfMutex;
 
 use crate::error::to_net_error;
 use crate::netif::{self, EspNetifAccess};

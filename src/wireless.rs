@@ -1,10 +1,10 @@
 //! This module provides the ESP-IDF implementation of the Wifi and Thread Matter stacks.
 
-use rs_matter_stack::matter::dm::networks::wireless::WirelessNetworks;
-use rs_matter_stack::matter::utils::init::{init, Init};
-use rs_matter_stack::network::Embedding;
-use rs_matter_stack::wireless::{WirelessBle, MAX_WIRELESS_NETWORKS};
-use rs_matter_stack::MatterStack;
+use rs_matter::dm::networks::wireless::WirelessNetworks;
+use rs_matter::stack::network::Embedding;
+use rs_matter::stack::wireless::{WirelessBle, MAX_WIRELESS_NETWORKS};
+use rs_matter::stack::MatterStack;
+use rs_matter::utils::init::{init, Init};
 
 use crate::ble::EspBtpGattContext;
 

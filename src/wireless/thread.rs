@@ -12,15 +12,16 @@ use esp_idf_svc::thread::{EspThread, Node};
 
 use log::info;
 
-use rs_matter_stack::matter::dm::clusters::gen_diag::InterfaceTypeEnum;
-use rs_matter_stack::matter::dm::clusters::icd_mgmt::{Icd, IcdNetParams};
-use rs_matter_stack::matter::dm::networks::wireless::{Thread, ThreadNetworks};
-use rs_matter_stack::matter::error::Error;
-use rs_matter_stack::matter::utils::futures::{select, Coalesce};
+use rs_matter::dm::clusters::gen_diag::InterfaceTypeEnum;
+use rs_matter::dm::clusters::icd_mgmt::{Icd, IcdNetParams};
+use rs_matter::dm::networks::wireless::{Thread, ThreadNetworks};
+use rs_matter::error::Error;
+use rs_matter::utils::futures::{select, Coalesce};
 
-use rs_matter_stack::network::{Embedding, Network};
-use rs_matter_stack::wireless::{
-    Gatt, GattTask, ThreadCoex, ThreadCoexTask, ThreadTask, MAX_WIRELESS_NETWORKS,
+use rs_matter::stack::network::{Embedding, Network};
+use rs_matter::stack::wireless::{
+    GattDriver, GattTask, ThreadCoexDriver, ThreadCoexTask, ThreadDriver, ThreadTask,
+    MAX_WIRELESS_NETWORKS,
 };
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
@@ -121,7 +122,7 @@ impl<'a, 'd> EspMatterThread<'a, 'd> {
     }
 }
 
-impl Gatt for EspMatterThread<'_, '_> {
+impl GattDriver for EspMatterThread<'_, '_> {
     async fn run<A>(&mut self, mut task: A) -> Result<(), Error>
     where
         A: GattTask,
@@ -142,7 +143,7 @@ impl Gatt for EspMatterThread<'_, '_> {
     }
 }
 
-impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
+impl ThreadDriver for EspMatterThread<'_, '_> {
     // The operational task receives `&net_ctl` (a `&EspMatterThreadCtl`) built from a
     // locally-created `EspThread<'_, Node>`, so the chain net-ctl type — and hence this
     // associated type — is `&'a EspMatterThreadCtl<'a, 'a, Node>`. Naming it here lets
@@ -208,7 +209,7 @@ impl rs_matter_stack::wireless::Thread for EspMatterThread<'_, '_> {
     }
 }
 
-impl ThreadCoex for EspMatterThread<'_, '_> {
+impl ThreadCoexDriver for EspMatterThread<'_, '_> {
     async fn run<A>(&mut self, mut task: A) -> Result<(), Error>
     where
         A: ThreadCoexTask,

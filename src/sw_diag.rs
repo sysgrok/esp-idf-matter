@@ -8,8 +8,8 @@ use esp_idf_svc::sys::{
     heap_caps_monitor_local_minimum_free_size_stop, MALLOC_CAP_DEFAULT,
 };
 
-use rs_matter_stack::matter::dm::clusters::sw_diag::{SwDiag, ThreadMetric};
-use rs_matter_stack::matter::error::{Error, ErrorCode};
+use rs_matter::dm::clusters::sw_diag::{SwDiag, ThreadMetric};
+use rs_matter::error::{Error, ErrorCode};
 
 /// The memory `malloc` allocates from: internal RAM, plus PSRAM with `CONFIG_SPIRAM_USE_MALLOC=y`.
 ///
@@ -95,9 +95,9 @@ mod tasks {
         uxTaskGetNumberOfTasks, uxTaskGetSystemState, vTaskSuspendAll, xTaskResumeAll, TaskStatus_t,
     };
 
-    use rs_matter_stack::matter::dm::clusters::sw_diag::ThreadMetric;
-    use rs_matter_stack::matter::error::Error;
-    use rs_matter_stack::matter::utils::storage::String;
+    use rs_matter::dm::clusters::sw_diag::ThreadMetric;
+    use rs_matter::error::Error;
+    use rs_matter::utils::storage::String;
 
     /// The longest thread name Matter allows
     const MAX_NAME_LEN: usize = 8;

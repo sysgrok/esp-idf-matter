@@ -39,10 +39,10 @@ mod example {
     use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
     use esp_idf_matter::matter::persist::{DummyKvBlobStore, VENDOR_KEYS_START};
+    use esp_idf_matter::matter::transport::network::mdns::builtin::BuiltinMdns;
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
     use esp_idf_matter::matter::{clusters, devices, root_endpoint};
     use esp_idf_matter::netif::{EspMatterNetStack, EspMatterNetif};
-    use esp_idf_matter::stack::matter::transport::network::mdns::builtin::BuiltinMdns;
     use esp_idf_matter::sw_diag::EspSwDiag;
 
     use esp_idf_svc::eventloop::EspSystemEventLoop;

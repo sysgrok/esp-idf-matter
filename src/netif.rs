@@ -10,15 +10,16 @@ use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::netif::EspNetif;
 use esp_idf_svc::sys::EspError;
 
-use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifDiag, NetifInfo};
-use rs_matter_stack::matter::dm::networks::NetChangeNotif;
-use rs_matter_stack::matter::error::Error;
-use rs_matter_stack::matter::utils::cell::RefCell;
-use rs_matter_stack::matter::utils::storage::String;
-use rs_matter_stack::matter::utils::sync::blocking::Mutex;
+use rs_matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifDiag, NetifInfo};
+use rs_matter::dm::networks::NetChangeNotif;
+use rs_matter::error::Error;
+use rs_matter::utils::cell::RefCell;
+use rs_matter::utils::storage::String;
+use rs_matter::utils::sync::blocking::Mutex;
 
-/// A network stack for ESP-IDF
-pub type EspMatterNetStack = edge_nal_std::Stack;
+pub use udp::*;
+
+mod udp;
 
 /// A `Netif` trait implementation for ESP-IDF
 pub struct EspMatterNetif<T> {
@@ -255,8 +256,8 @@ pub mod utils {
 
     use alloc::sync::Arc;
 
-    use rs_matter_stack::matter::utils::futures::select;
-    use rs_matter_stack::matter::utils::timers::{Duration, Timer};
+    use rs_matter::utils::futures::select;
+    use rs_matter::utils::timers::{Duration, Timer};
 
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
@@ -268,9 +269,9 @@ pub mod utils {
         LWIP_IPV6_NUM_ADDRESSES,
     };
 
-    use rs_matter_stack::matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifInfo};
-    use rs_matter_stack::matter::utils::storage::Vec;
-    use rs_matter_stack::matter::utils::sync::Notification;
+    use rs_matter::dm::clusters::gen_diag::{InterfaceTypeEnum, NetifInfo};
+    use rs_matter::utils::storage::Vec;
+    use rs_matter::utils::sync::Notification;
 
     extern crate alloc;
 
