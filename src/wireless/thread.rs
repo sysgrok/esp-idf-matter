@@ -94,19 +94,11 @@ impl<'a, 'd> EspMatterThread<'a, 'd> {
     }
 
     /// Derive the Thread SRP host name from `eui64` rather than from the
-    /// factory-programmed IEEE 802.15.4 address.
+    /// node's Thread extended address.
     ///
-    /// A production device should keep the default: the SRP host name is meant to be
-    /// stable, and its records on the SRP server are keyed by an ECDSA key that
-    /// OpenThread persists alongside its other settings.
-    ///
-    /// Examples and demos are the exception. Erasing the flash discards that ECDSA key,
-    /// but the SRP server keeps the records the device registered under the old key
-    /// until their key lease runs out - 14 days, by default. Until then the server
-    /// answers every re-registration attempt under the same host name with `YXDOMAIN`
-    /// ("name exists"), and the device stays undiscoverable. Passing a freshly randomized
-    /// EUI-64 on each boot side-steps that, at the cost of leaving one dead host record
-    /// behind on the server per run.
+    /// The default should suit every device, including one whose flash gets
+    /// erased: see [`EspMatterThreadSrp`] for how it keeps the name and the
+    /// SRP key in step.
     pub fn with_srp_host_eui64(mut self, eui64: [u8; 8]) -> Self {
         self.srp_host_eui64 = Some(eui64);
 

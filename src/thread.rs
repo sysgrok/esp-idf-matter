@@ -14,7 +14,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::task::embassy_sync::EspRawMutex;
 use esp_idf_svc::netif::EspNetif;
-use esp_idf_svc::sys::{esp, esp_mac_type_t_ESP_MAC_IEEE802154, esp_read_mac, EspError};
+use esp_idf_svc::sys::EspError;
 use esp_idf_svc::thread::{
     ActiveScanResult, EspThread, NetifMode, Role, SrpConf, SrpService, SrpServiceSlot,
 };
@@ -681,6 +681,14 @@ const MAX_MATTER_SERVICES: usize = MAX_FABRICS + 1;
 /// An mDNS implementation for Thread: registers the Matter services over SRP,
 /// and resolves and browses those of others with the DNS client (when the
 /// OpenThread DNS client is enabled).
+///
+/// The SRP host name is the node's Thread extended address, in hexadecimal.
+/// OpenThread picks this address at random and keeps it in its settings,
+/// together with the key it signs the SRP updates with. So the name stays the
+/// same across restarts, and changes together with the key when the settings
+/// are erased. The SRP server reserves a name for the key that registered it
+/// until the key lease ends, 14 days by default, so a name that stayed the same
+/// while the key changed would be refused until then.
 pub struct EspMatterThreadSrp<'a, 'd, M>
 where
     M: NetifMode,
@@ -696,7 +704,7 @@ where
     M: NetifMode,
 {
     /// Create a new instance of the `EspMatterThreadSrp` type,
-    /// deriving the SRP host name from the factory-programmed IEEE 802.15.4 address.
+    /// deriving the SRP host name from the Thread extended address.
     pub fn new(thread: &'a EspThread<'d, M>) -> Self {
         Self::new_with_host_eui64(thread, None)
     }
@@ -705,7 +713,7 @@ where
     ///
     /// # Arguments
     /// - `host_eui64`: The EUI-64 to derive the SRP host name from, or `None` to use the
-    ///   factory-programmed IEEE 802.15.4 address (see [`EspMatterThreadSrp::new`]).
+    ///   Thread extended address (see [`EspMatterThreadSrp`]).
     pub fn new_with_host_eui64(thread: &'a EspThread<'d, M>, host_eui64: Option<[u8; 8]>) -> Self {
         Self {
             thread,
@@ -716,7 +724,7 @@ where
     }
 
     /// Create a new instance of the `EspMatterThreadSrp` type,
-    /// deriving the SRP host name from the factory-programmed IEEE 802.15.4 address.
+    /// deriving the SRP host name from the Thread extended address.
     pub fn init(thread: &'a EspThread<'d, M>) -> impl Init<Self> {
         Self::init_with_host_eui64(thread, None)
     }
@@ -725,7 +733,7 @@ where
     ///
     /// # Arguments
     /// - `host_eui64`: The EUI-64 to derive the SRP host name from, or `None` to use the
-    ///   factory-programmed IEEE 802.15.4 address (see [`EspMatterThreadSrp::init`]).
+    ///   Thread extended address (see [`EspMatterThreadSrp`]).
     pub fn init_with_host_eui64(
         thread: &'a EspThread<'d, M>,
         host_eui64: Option<[u8; 8]>,
@@ -743,31 +751,20 @@ where
         matter: &Matter<'_>,
         _ipv6: &[core::net::Ipv6Addr],
     ) -> Result<(), Error> {
-        let ieee_eui64 = match self.host_eui64 {
+        let addr = match self.host_eui64 {
             Some(eui64) => eui64,
-            None => {
-                let mut eui64 = [0; 8];
-                esp!(unsafe {
-                    esp_read_mac(eui64.as_mut_ptr(), esp_mac_type_t_ESP_MAC_IEEE802154)
-                })
-                .map_err(to_net_error)?;
-
-                eui64
-            }
+            None => self
+                .thread
+                .ext_address()
+                .map_err(to_net_error)?
+                .to_be_bytes(),
         };
 
         let mut hostname = String::<16>::new();
         write!(
             hostname,
             "{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            ieee_eui64[0],
-            ieee_eui64[1],
-            ieee_eui64[2],
-            ieee_eui64[3],
-            ieee_eui64[4],
-            ieee_eui64[5],
-            ieee_eui64[6],
-            ieee_eui64[7]
+            addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7]
         )
         .unwrap();
 
