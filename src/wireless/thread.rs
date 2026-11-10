@@ -1,3 +1,4 @@
+use core::marker::PhantomData;
 use core::pin::pin;
 
 use alloc::sync::Arc;
@@ -14,32 +15,46 @@ use log::info;
 
 use rs_matter::dm::clusters::gen_diag::InterfaceTypeEnum;
 use rs_matter::dm::clusters::icd_mgmt::{Icd, IcdNetParams};
-use rs_matter::dm::networks::wireless::{Thread, ThreadNetworks};
+use rs_matter::dm::networks::wireless::ThreadNetworks;
 use rs_matter::error::Error;
 use rs_matter::utils::futures::{select, Coalesce};
 
-use rs_matter::stack::network::{Embedding, Network};
+use rs_matter::stack::network::{Embedding, StackNetwork, ThreadStackNetwork};
 use rs_matter::stack::wireless::{
     GattDriver, GattTask, ThreadCoexDriver, ThreadCoexTask, ThreadDriver, ThreadTask,
-    MAX_WIRELESS_NETWORKS,
 };
+use rs_matter::stack::MatterStack;
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
 use crate::error::to_net_error;
 use crate::netif::{EspMatterNetStack, EspMatterNetif};
 use crate::thread::{EspMatterThreadCtl, EspMatterThreadSrp};
 
-use super::EspWirelessMatterStack;
 #[cfg(esp_idf_bt_bluedroid_enabled)]
 use super::GATTS_APP_ID;
 
 extern crate alloc;
 
-/// A type alias for an ESP-IDF Matter stack running over Thread (and BLE, during commissioning).
-///
-/// `S` is the networks store of the Thread interface.
-pub type EspThreadMatterStack<'a, const B: usize, E, S = ThreadNetworks<MAX_WIRELESS_NETWORKS>> =
-    EspWirelessMatterStack<'a, B, Thread, E, S>;
+/// The network of a `MatterStack` that runs Thread with [`EspMatterThread`]: the networks
+/// store `S` (a Thread one, `ThreadNetworks` by default), and the context of the BLE GATT
+/// peripheral it commissions over.
+pub struct EspThreadNetwork<S = ThreadNetworks>(PhantomData<fn() -> S>);
+
+impl<S> StackNetwork for EspThreadNetwork<S>
+where
+    S: ThreadStackNetwork<Context = ()>,
+{
+    type Store = S::Store;
+    type Context = EspBtpGattContext;
+}
+
+impl<S> ThreadStackNetwork for EspThreadNetwork<S> where S: ThreadStackNetwork<Context = ()> {}
+
+/// The network of a stack that [`EspMatterThread`] can be built for: `EspThreadNetwork`, or
+/// `EspAnyNetwork` on chips with both radios.
+pub trait EspThreadCapable: StackNetwork<Context = EspBtpGattContext> {}
+
+impl<S> EspThreadCapable for EspThreadNetwork<S> where S: ThreadStackNetwork<Context = ()> {}
 
 /// A `Thread` trait implementation via ESP-IDF's Thread/BT modem
 pub struct EspMatterThread<'a, 'd> {
@@ -54,24 +69,18 @@ pub struct EspMatterThread<'a, 'd> {
 
 impl<'a, 'd> EspMatterThread<'a, 'd> {
     /// Create a new instance of the `EspMatterThread` type.
-    pub fn new<const B: usize, E, S>(
+    pub fn new<const B: usize, S, E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         nvs: EspDefaultNvsPartition,
         mounted_event_fs: Arc<MountedEventfs>,
-        stack: &'a EspThreadMatterStack<B, E, S>,
+        stack: &'a MatterStack<B, S, E>,
     ) -> Self
     where
-        E: Embedding + 'static,
-        S: Embedding + 'static,
+        S: EspThreadCapable,
+        E: Embedding,
     {
-        Self::wrap(
-            modem,
-            sysloop,
-            nvs,
-            mounted_event_fs,
-            stack.network().embedding().context(),
-        )
+        Self::wrap(modem, sysloop, nvs, mounted_event_fs, stack.context())
     }
 
     /// Wrap existing parts into a new instance of the `EspMatterThread` type.
@@ -208,10 +217,10 @@ impl ThreadCoexDriver for EspMatterThread<'_, '_> {
     {
         let modem = unsafe { self.modem.reborrow() };
 
-        #[cfg(not(esp32c6))]
+        #[cfg(not(any(esp32c5, esp32c6, esp32c61, esp32s31)))]
         let (thread_p, bt_p) = modem.split();
 
-        #[cfg(esp32c6)]
+        #[cfg(any(esp32c5, esp32c6, esp32c61, esp32s31))]
         let (_, thread_p, bt_p) = modem.split();
 
         let mut thread = EspThread::new(
