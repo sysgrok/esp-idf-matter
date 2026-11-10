@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 #[cfg(esp_idf_bt_bluedroid_enabled)]
 use esp_idf_svc::bt::{self, BtDriver};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -7,14 +9,15 @@ use esp_idf_svc::timer::EspTaskTimerService;
 use esp_idf_svc::wifi::{AsyncWifi, EspWifi};
 
 use rs_matter::dm::clusters::gen_diag::InterfaceTypeEnum;
-use rs_matter::dm::networks::wireless::{Wifi, WifiNetworks};
+use rs_matter::dm::networks::wireless::WifiNetworks;
 use rs_matter::error::Error;
 
 use rs_matter::stack::mdns::Mdns;
-use rs_matter::stack::network::{Embedding, Network};
+use rs_matter::stack::network::{Embedding, StackNetwork, WifiStackNetwork};
 use rs_matter::stack::wireless::{
-    GattDriver, GattTask, WifiCoexDriver, WifiCoexTask, WifiDriver, WifiTask, MAX_WIRELESS_NETWORKS,
+    GattDriver, GattTask, WifiCoexDriver, WifiCoexTask, WifiDriver, WifiTask,
 };
+use rs_matter::stack::MatterStack;
 use rs_matter::transport::network::mdns::builtin::BuiltinMdns;
 
 use crate::ble::{EspBtpGattContext, EspBtpGattPeripheral};
@@ -22,15 +25,29 @@ use crate::error::to_net_error;
 use crate::netif::{EspMatterNetStack, EspMatterNetif};
 use crate::wifi::EspMatterWifiCtl;
 
-use super::EspWirelessMatterStack;
 #[cfg(esp_idf_bt_bluedroid_enabled)]
 use super::GATTS_APP_ID;
 
-/// A type alias for an ESP-IDF Matter stack running over Wifi (and BLE, during commissioning).
-///
-/// `S` is the networks store of the Wifi interface.
-pub type EspWifiMatterStack<'a, const B: usize, E, S = WifiNetworks<MAX_WIRELESS_NETWORKS>> =
-    EspWirelessMatterStack<'a, B, Wifi, E, S>;
+/// The network of a `MatterStack` that runs Wifi with [`EspMatterWifi`]: the networks
+/// store `S` (a Wifi one, `WifiNetworks` by default), and the context of the BLE GATT
+/// peripheral it commissions over.
+pub struct EspWifiNetwork<S = WifiNetworks>(PhantomData<fn() -> S>);
+
+impl<S> StackNetwork for EspWifiNetwork<S>
+where
+    S: WifiStackNetwork<Context = ()>,
+{
+    type Store = S::Store;
+    type Context = EspBtpGattContext;
+}
+
+impl<S> WifiStackNetwork for EspWifiNetwork<S> where S: WifiStackNetwork<Context = ()> {}
+
+/// The network of a stack that [`EspMatterWifi`] can be built for: `EspWifiNetwork`, or
+/// `EspAnyNetwork` on chips with both radios.
+pub trait EspWifiCapable: StackNetwork<Context = EspBtpGattContext> {}
+
+impl<S> EspWifiCapable for EspWifiNetwork<S> where S: WifiStackNetwork<Context = ()> {}
 
 /// A `Wifi` trait implementation via ESP-IDF's Wifi/BT modem
 pub struct EspMatterWifi<'a, 'd, M = BuiltinMdns> {
@@ -44,16 +61,16 @@ pub struct EspMatterWifi<'a, 'd, M = BuiltinMdns> {
 
 impl<'a, 'd> EspMatterWifi<'a, 'd, BuiltinMdns> {
     /// Create a new instance of the `EspMatterWifi` type .
-    pub fn new_with_builtin_mdns<const B: usize, E, S>(
+    pub fn new_with_builtin_mdns<const B: usize, S, E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         timer: EspTaskTimerService,
         nvs: EspDefaultNvsPartition,
-        stack: &'a EspWifiMatterStack<B, E, S>,
+        stack: &'a MatterStack<B, S, E>,
     ) -> Self
     where
-        E: Embedding + 'static,
-        S: Embedding + 'static,
+        S: EspWifiCapable,
+        E: Embedding,
     {
         Self::new(modem, sysloop, timer, nvs, stack, BuiltinMdns::new())
     }
@@ -64,26 +81,19 @@ where
     M: Mdns,
 {
     /// Create a new instance of the `EspMatterWifi` type.
-    pub fn new<const B: usize, E, S>(
+    pub fn new<const B: usize, S, E>(
         modem: Modem<'d>,
         sysloop: EspSystemEventLoop,
         timer: EspTaskTimerService,
         nvs: EspDefaultNvsPartition,
-        stack: &'a EspWifiMatterStack<B, E, S>,
+        stack: &'a MatterStack<B, S, E>,
         mdns: M,
     ) -> Self
     where
-        E: Embedding + 'static,
-        S: Embedding + 'static,
+        S: EspWifiCapable,
+        E: Embedding,
     {
-        Self::wrap(
-            modem,
-            sysloop,
-            timer,
-            nvs,
-            mdns,
-            stack.network().embedding().context(),
-        )
+        Self::wrap(modem, sysloop, timer, nvs, mdns, stack.context())
     }
 
     /// Wrap existing parts into a new instance of the `EspMatterWifi` type.
@@ -172,10 +182,10 @@ impl WifiCoexDriver for EspMatterWifi<'_, '_> {
     {
         let modem = unsafe { self.modem.reborrow() };
 
-        #[cfg(not(esp32c6))]
+        #[cfg(not(any(esp32c5, esp32c6, esp32c61, esp32s31)))]
         let (wifi_p, bt_p) = modem.split();
 
-        #[cfg(esp32c6)]
+        #[cfg(any(esp32c5, esp32c6, esp32c61, esp32s31))]
         let (wifi_p, _, bt_p) = modem.split();
 
         let wifi = AsyncWifi::wrap(

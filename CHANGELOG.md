@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Breaking: no stack aliases; a stack is a plain `MatterStack` over `EspThreadNetwork`, `EspWifiNetwork` or `EspAnyNetwork` (a networks store plus the BLE GATT context), as in `MatterStack<'a, B, EspThreadNetwork, E>`, or over `EthNetwork` for Ethernet. Each takes a store of its network type. `EspMatterThread` and `EspMatterWifi` take a stack whose network is `EspThreadCapable` or `EspWifiCapable`: their own network type, or `EspAnyNetwork`. `EspWirelessMatterStack`, `EspWirelessBle`, `EspThreadMatterStack`, `EspWifiMatterStack`, `EspEthMatterStack`, `EspEth` and `EspGatt` are gone
+- New: `EspMatterAny`, a driver for Ethernet, Wifi or Thread, whichever the node runs, for the stack's `run`, `run_no_coex` and `run_oper`: an `AnyNetDriver` of the ESP-IDF drivers
+- The stacks that commission over BLE need `BTP_BUMP_SIZE` more in their bump arena, as the examples show, since `rs_matter::stack` keeps the BTP transport there
+- New: ESP32-S31 support; the Wifi and Thread drivers split the modem as `esp-idf-hal` does on the S31, C5, C6 and C61
 - Fix: the Thread SRP host name comes from the Thread extended address, not the factory EUI-64, so that the SRP server does not refuse a node whose flash was erased for up to 14 days
 - Breaking: move to `rs_matter::stack`, in place of the `rs-matter-stack` crate; `rs-matter-stack`, `edge-nal` and `edge-nal-std` are gone, and `EspMatterNetStack` is a type of its own
 - Breaking: update to the `rs-matter` split into crates; `root_handler` takes the `Matter` instance, as per `rs-matter-stack`

@@ -1,4 +1,4 @@
-//! An example utilizing the `EspEthMatterStack` struct.
+//! An example running the `MatterStack` over Ethernet.
 //! As the name suggests, this Matter stack assembly uses Ethernet as the main transport, as well as for commissioning.
 //!
 //! Notice thart we actually don't use Ethernet for real, as ESP32s don't have Ethernet ports out of the box.
@@ -10,22 +10,21 @@
 #![recursion_limit = "256"]
 
 fn main() -> Result<(), anyhow::Error> {
-    #[cfg(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6))]
+    #[cfg(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32s31))]
     {
         example::main()
     }
 
-    #[cfg(not(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6)))]
+    #[cfg(not(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32s31)))]
     panic!("This example is only supported on ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and ESP32-C6 chips. Please select a different example or target.");
 }
 
-#[cfg(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6))]
+#[cfg(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32s31))]
 mod example {
     use core::pin::pin;
 
     use alloc::sync::Arc;
 
-    use esp_idf_matter::eth::EspEthMatterStack;
     use esp_idf_matter::init_async_io;
     use esp_idf_matter::matter::crypto::{default_crypto, Crypto};
     use esp_idf_matter::matter::dm::clusters::app::on_off::test::TestOnOffDeviceLogic;
@@ -37,8 +36,11 @@ mod example {
     };
     use esp_idf_matter::matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
     use esp_idf_matter::matter::dm::endpoints::ROOT_ENDPOINT_ID;
+    use esp_idf_matter::matter::dm::networks::eth::EthNetwork;
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
     use esp_idf_matter::matter::persist::{DummyKvBlobStore, VENDOR_KEYS_START};
+    use esp_idf_matter::matter::stack::eth::PreexistingEthernet;
+    use esp_idf_matter::matter::stack::MatterStack;
     use esp_idf_matter::matter::transport::network::mdns::builtin::BuiltinMdns;
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
     use esp_idf_matter::matter::{clusters, devices, root_endpoint};
@@ -107,7 +109,7 @@ mod example {
     async fn matter() -> Result<(), anyhow::Error> {
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
-        let stack = MATTER_STACK.uninit().init_with(EspEthMatterStack::init(
+        let stack = MATTER_STACK.uninit().init_with(MatterStack::init(
             &TEST_DEV_DET,
             TEST_DEV_COMM,
             &TEST_DEV_ATT,
@@ -166,7 +168,7 @@ mod example {
             // Chain any extra Endpoint 0 clusters of your own the same way.
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
-                Async(EspEthMatterStack::<0, ()>::root_handler(
+                Async(MatterStack::<0, EthNetwork>::root_handler(
                     stack.matter(),
                     &EspSwDiag,
                     &mut weak_rand,
@@ -195,17 +197,19 @@ mod example {
 
         // Run the Matter stack with our handler
         // Using `pin!` is completely optional, but reduces the size of the final future
-        let matter = pin!(stack.run_preex(
-            // The Matter stack needs UDP sockets to communicate with other Matter devices
-            EspMatterNetStack::new(),
-            // The Matter stack need access to the netif on which we'll operate
-            // Since we are pretending to use a wired Ethernet connection - yet -
-            // we are using a Wifi STA - provide the Wifi netif here
-            EspMatterNetif::new(wifi.wifi().sta_netif(), InterfaceTypeEnum::WiFi, sysloop),
-            // No Ethernet diagnostics, as the netif is not really Ethernet
-            &(),
-            // The Matter stack needs an mDNS service to advertise itself
-            &mut mdns,
+        let matter = pin!(stack.run_eth(
+            PreexistingEthernet::new(
+                // The Matter stack needs UDP sockets to communicate with other Matter devices
+                EspMatterNetStack::new(),
+                // The Matter stack need access to the netif on which we'll operate
+                // Since we are pretending to use a wired Ethernet connection - yet -
+                // we are using a Wifi STA - provide the Wifi netif here
+                EspMatterNetif::new(wifi.wifi().sta_netif(), InterfaceTypeEnum::WiFi, sysloop),
+                // No Ethernet diagnostics, as the netif is not really Ethernet
+                &(),
+                // The Matter stack needs an mDNS service to advertise itself
+                &mut mdns,
+            ),
             // The crypto provider
             &crypto,
             // Our `AsyncHandler` + `AsyncMetadata` impl
@@ -224,7 +228,7 @@ mod example {
 
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
-    static MATTER_STACK: StaticCell<EspEthMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<MatterStack<BUMP_SIZE, EthNetwork>> = StaticCell::new();
 
     /// The mDNS responder is also allocated statically for the same reason.
     static MDNS: StaticCell<BuiltinMdns> = StaticCell::new();

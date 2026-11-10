@@ -37,16 +37,16 @@
 #![recursion_limit = "256"]
 
 fn main() -> Result<(), anyhow::Error> {
-    #[cfg(any(esp32c6, esp32h2))]
+    #[cfg(any(esp32c6, esp32h2, esp32s31))]
     {
         example::main()
     }
 
-    #[cfg(not(any(esp32c6, esp32h2)))]
+    #[cfg(not(any(esp32c6, esp32h2, esp32s31)))]
     panic!("This example is only supported on ESP32-C6 and ESP32-H2 chips. Please select a different example or target.");
 }
 
-#[cfg(any(esp32c6, esp32h2))]
+#[cfg(any(esp32c6, esp32h2, esp32s31))]
 mod example {
     use core::pin::pin;
 
@@ -80,6 +80,8 @@ mod example {
         MatchContext, Node, ReadContext, ReadReply,
     };
     use esp_idf_matter::matter::error::{Error, ErrorCode};
+    use esp_idf_matter::matter::stack::wireless::BTP_BUMP_SIZE;
+    use esp_idf_matter::matter::stack::MatterStack;
     use esp_idf_matter::matter::tlv::Nullable;
     use esp_idf_matter::matter::utils::epoch::MATTER_EPOCH_SECS;
     use esp_idf_matter::matter::utils::futures::{select, select3, Coalesce, Either};
@@ -87,7 +89,7 @@ mod example {
     use esp_idf_matter::matter::{clusters, devices, with, Matter};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::sw_diag::EspSwDiag;
-    use esp_idf_matter::wireless::{EspMatterThread, EspThreadMatterStack};
+    use esp_idf_matter::wireless::{EspMatterThread, EspThreadNetwork};
 
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::hal::gpio::{Input, PinDriver, Pull};
@@ -111,7 +113,7 @@ mod example {
     extern crate alloc;
 
     const STACK_SIZE: usize = 12 * 1024;
-    const BUMP_SIZE: usize = 16000;
+    const BUMP_SIZE: usize = 16000 + BTP_BUMP_SIZE;
 
     /// How long the BOOT button has to be held to factory-reset the device.
     const RESET_SECS: u64 = 3;
@@ -220,7 +222,7 @@ mod example {
 
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
-        let stack = MATTER_STACK.uninit().init_with(EspThreadMatterStack::init(
+        let stack = MATTER_STACK.uninit().init_with(MatterStack::init(
             &BASIC_INFO,
             TEST_DEV_COMM,
             &TEST_DEV_ATT,
@@ -266,7 +268,7 @@ mod example {
             // The stack adds the operational network clusters on top.
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
-                Async(EspThreadMatterStack::<0, ()>::root_handler(
+                Async(MatterStack::<0, EspThreadNetwork>::root_handler(
                     stack.matter(),
                     &EspSwDiag,
                     &mut weak_rand,
@@ -316,7 +318,7 @@ mod example {
             // Run the Matter stack with our handler. The Thread driver runs as a Sleepy End
             // Device following the ICD state. It keeps the factory-programmed EUI-64: this device
             // reboots on every wake-up, and a random one would register a new SRP host each time.
-            let mut matter = pin!(stack.run_coex(
+            let mut matter = pin!(stack.run_thread(
                 EspMatterThread::new(peripherals.modem, sysloop, nvs, mounted_event_fs, stack)
                     .with_icd(icd),
                 // The crypto provider
@@ -651,7 +653,7 @@ mod example {
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
     /// It is also a mandatory requirement when the `ThreadBle` stack variation is used.
-    static MATTER_STACK: StaticCell<EspThreadMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<MatterStack<BUMP_SIZE, EspThreadNetwork>> = StaticCell::new();
 
     /// The LIT ICD state, shared by the ICD Management cluster handler, the Thread driver and
     /// the deep-sleep logic.

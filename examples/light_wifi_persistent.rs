@@ -1,11 +1,11 @@
-//! An example utilizing the `EspWifiMatterStack` struct
+//! An example utilizing the `MatterStack` struct over Wifi
 //! and additionally persisting the `rs-matter` state to the NOR Flash.
 //!
 //! As the name suggests, this Matter stack assembly uses Wifi as the main transport,
 //! and thus BLE for commissioning.
 //!
-//! If you want to use Ethernet, utilize `EspEthMatterStack` instead.
-//! If you want to use non-concurrent commissioning, call `run` instead of `run_coex`
+//! If you want to use Ethernet, run the stack with `run_eth` instead.
+//! If you want to use non-concurrent commissioning, call `run_wifi_no_coex` instead of `run_wifi`
 //! and provision a higher `BUMP_SIZE` because the non-concurrent commissioning currently has a much-higher
 //! memory requirements on the futures' sizes (but lower memory requirements inside ESP-IDF).
 //! (Note: Alexa does not work (yet) with non-concurrent commissioning.)
@@ -15,16 +15,16 @@
 #![recursion_limit = "256"]
 
 fn main() -> Result<(), anyhow::Error> {
-    #[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
+    #[cfg(any(esp32, esp32s3, esp32c3, esp32c6, esp32s31))]
     {
         example::main()
     }
 
-    #[cfg(not(any(esp32, esp32s3, esp32c3, esp32c6)))]
+    #[cfg(not(any(esp32, esp32s3, esp32c3, esp32c6, esp32s31)))]
     panic!("This example is only supported on ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and ESP32-C6 chips. Please select a different example or target.");
 }
 
-#[cfg(any(esp32, esp32s3, esp32c3, esp32c6))]
+#[cfg(any(esp32, esp32s3, esp32c3, esp32c6, esp32s31))]
 mod example {
     use core::pin::pin;
 
@@ -43,13 +43,15 @@ mod example {
     use esp_idf_matter::matter::dm::{Async, Dataver, EmptyHandler, Endpoint, Node};
     use esp_idf_matter::matter::error::Error;
     use esp_idf_matter::matter::persist::VENDOR_KEYS_START;
+    use esp_idf_matter::matter::stack::wireless::BTP_BUMP_SIZE;
+    use esp_idf_matter::matter::stack::MatterStack;
     use esp_idf_matter::matter::utils::futures::{select, Coalesce, Either};
     use esp_idf_matter::matter::utils::init::InitMaybeUninit;
     use esp_idf_matter::matter::utils::timers::Timer;
     use esp_idf_matter::matter::{clusters, devices, root_endpoint};
     use esp_idf_matter::persist::EspKvBlobStore;
     use esp_idf_matter::sw_diag::EspSwDiag;
-    use esp_idf_matter::wireless::{EspMatterWifi, EspWifiMatterStack};
+    use esp_idf_matter::wireless::{EspMatterWifi, EspWifiNetwork};
 
     #[cfg(esp_idf_bt_bluedroid_enabled)]
     use esp_idf_svc::bt::reduce_bt_memory;
@@ -69,7 +71,7 @@ mod example {
     extern crate alloc;
 
     const STACK_SIZE: usize = 10 * 1024;
-    const BUMP_SIZE: usize = 20000;
+    const BUMP_SIZE: usize = 20000 + BTP_BUMP_SIZE;
 
     const RESET_SECS: u64 = 3;
 
@@ -113,7 +115,7 @@ mod example {
     async fn matter() -> Result<(), anyhow::Error> {
         // Initialize the Matter stack (can be done only once),
         // as we'll run it in this thread
-        let stack = MATTER_STACK.uninit().init_with(EspWifiMatterStack::init(
+        let stack = MATTER_STACK.uninit().init_with(MatterStack::init(
             &TEST_DEV_DET,
             TEST_DEV_COMM,
             &TEST_DEV_ATT,
@@ -157,7 +159,7 @@ mod example {
             // Chain any extra Endpoint 0 clusters of your own the same way.
             .chain(
                 |e, _| e == ROOT_ENDPOINT_ID,
-                Async(EspWifiMatterStack::<0, ()>::root_handler(
+                Async(MatterStack::<0, EspWifiNetwork>::root_handler(
                     stack.matter(),
                     &EspSwDiag,
                     &mut weak_rand,
@@ -192,7 +194,7 @@ mod example {
 
             // Run the Matter stack with our handler
             // Using `pin!` is completely optional, but reduces the size of the final future
-            let mut matter = pin!(stack.run_coex(
+            let mut matter = pin!(stack.run_wifi(
                 // The Matter stack needs the Wifi/BLE modem peripheral
                 EspMatterWifi::new_with_builtin_mdns(
                     peripherals.modem,
@@ -238,7 +240,7 @@ mod example {
     /// The Matter stack is allocated statically to avoid
     /// program stack blowups.
     /// It is also a mandatory requirement when the `WifiBle` stack variation is used.
-    static MATTER_STACK: StaticCell<EspWifiMatterStack<BUMP_SIZE, ()>> = StaticCell::new();
+    static MATTER_STACK: StaticCell<MatterStack<BUMP_SIZE, EspWifiNetwork>> = StaticCell::new();
 
     /// Endpoint 0 (the root endpoint) always runs
     /// the hidden Matter system clusters, so we pick ID=1
