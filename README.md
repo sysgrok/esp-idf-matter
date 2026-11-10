@@ -242,12 +242,6 @@ mod example {
 }
 ```
 
-## Future
-
-* Device Attestation data support using secure flash storage
-* Setting system time via Matter
-* Matter OTA support based on the ESP-IDF OTA API
-
 ## Build Prerequisites
 
 Follow the [Prerequisites](https://github.com/esp-rs/esp-idf-template#prerequisites) section in the `esp-idf-template` crate.
