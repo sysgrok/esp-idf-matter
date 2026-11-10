@@ -238,6 +238,17 @@ where
 
         let event_ctx = GattEventContext::new(self.app_id, &gap, &gatts, self.context);
 
+        let adv_data = *service_adv_data;
+        let service_name = service_name.to_owned();
+
+        // Declared after everything the callbacks borrow, so that it is dropped (and unsubscribes
+        // them) before any of it
+        let _stop = StopOnDrop {
+            gap: &gap,
+            gatts: &gatts,
+            context: self.context,
+        };
+
         info!("BLE Gap and Gatts initialized");
 
         unsafe {
@@ -246,9 +257,6 @@ where
             })
             .map_err(to_matter_err)?;
         }
-
-        let adv_data = service_adv_data.clone();
-        let service_name = service_name.to_owned();
 
         unsafe {
             gatts
@@ -899,6 +907,65 @@ where
         }
 
         Ok(())
+    }
+}
+
+/// Stops advertising, drops the peer and unregisters the BTP app when `run` returns or its future
+/// is dropped. The `rs-matter` stack stops BLE that way when a commissioning window closes.
+///
+/// With the app unregistered, Bluedroid also deletes its service, so the next `run` can register
+/// the app again.
+struct StopOnDrop<'r, 'd, M, T>
+where
+    T: Borrow<BtDriver<'d, M>>,
+    M: BleEnabled,
+{
+    gap: &'r EspBleGap<'d, M, T>,
+    gatts: &'r EspGatts<'d, M, T>,
+    context: &'r EspBtpGattContext,
+}
+
+impl<'d, M, T> Drop for StopOnDrop<'_, 'd, M, T>
+where
+    T: Borrow<BtDriver<'d, M>>,
+    M: BleEnabled,
+{
+    fn drop(&mut self) {
+        // Forget the peer first, so that a late `PeerDisconnected` does not restart advertising
+        let (peer, gatt_if) = self.context.state.lock(|state| {
+            let mut state = state.borrow_mut();
+
+            state.service_handle = None;
+            state.c1_handle = None;
+            state.c2_handle = None;
+            state.c2_cccd_handle = None;
+
+            (
+                state.connection.take().map(|conn| conn.peer),
+                state.gatt_if.take(),
+            )
+        });
+
+        let _ = self.gap.unsubscribe();
+        let _ = self.gatts.unsubscribe();
+
+        if let Err(e) = self.gap.stop_advertising() {
+            warn!("Cannot stop advertising: {e:?}");
+        }
+
+        if let Some(peer) = peer {
+            if let Err(e) = self.gap.disconnect(peer) {
+                warn!("Cannot disconnect: {e:?}");
+            }
+        }
+
+        if let Some(gatt_if) = gatt_if {
+            if let Err(e) = self.gatts.unregister_app(gatt_if) {
+                warn!("Cannot unregister the BTP app: {e:?}");
+            }
+        }
+
+        info!("BLE advertising stopped");
     }
 }
 

@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix: the BLE peripheral stops advertising and disconnects when the commissioning window closes; before, a commissioned device kept advertising over BLE as commissionable
 - Breaking: no stack aliases; a stack is a plain `MatterStack` over `EspThreadNetwork`, `EspWifiNetwork` or `EspAnyNetwork` (a networks store plus the BLE GATT context), as in `MatterStack<'a, B, EspThreadNetwork, E>`, or over `EthNetwork` for Ethernet. Each takes a store of its network type. `EspMatterThread` and `EspMatterWifi` take a stack whose network is `EspThreadCapable` or `EspWifiCapable`: their own network type, or `EspAnyNetwork`. `EspWirelessMatterStack`, `EspWirelessBle`, `EspThreadMatterStack`, `EspWifiMatterStack`, `EspEthMatterStack`, `EspEth` and `EspGatt` are gone
 - New: `EspMatterAny`, a driver for Ethernet, Wifi or Thread, whichever the node runs, for the stack's `run`, `run_no_coex` and `run_oper`: an `AnyNetDriver` of the ESP-IDF drivers
 - The stacks that commission over BLE need `BTP_BUMP_SIZE` more in their bump arena, as the examples show, since `rs_matter::stack` keeps the BTP transport there

@@ -12,8 +12,9 @@ use esp_idf_svc::ble::{ensure_addr, BleDriver, BleError, BleUuid, HostEvent};
 use esp_idf_svc::gatt_services;
 use esp_idf_svc::hal::modem::BluetoothModemPeripheral;
 use esp_idf_svc::sys::{
-    ble_gatt_svc_def, EspError, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_GAP_CONN_MODE_UND,
-    BLE_GAP_DISC_MODE_GEN, BLE_HS_EDONE, BLE_OWN_ADDR_PUBLIC,
+    ble_error_codes_BLE_ERR_REM_USER_CONN_TERM, ble_gap_terminate, ble_gatt_svc_def, ble_hs_synced,
+    EspError, BLE_ATT_ERR_INSUFFICIENT_RES, BLE_GAP_CONN_MODE_UND, BLE_GAP_DISC_MODE_GEN,
+    BLE_HS_EDONE, BLE_OWN_ADDR_PUBLIC,
 };
 
 use ::log::{error, info, trace, warn};
@@ -88,8 +89,8 @@ struct State {
     btp_gen: Option<usize>,
     in_data: Vec<u8, MAX_MTU_SIZE>,
     out_data: Vec<u8, MAX_MTU_SIZE>,
-    /// Set by the host-sync / disconnect hooks to request (re)advertising; consumed by the outgoing
-    /// pump (advertising is synchronous, so it needs no future of its own).
+    /// Set by `run` and by the host-sync / disconnect hooks to request (re)advertising; consumed by
+    /// the outgoing pump (advertising is synchronous, so it needs no future of its own).
     need_advertise: bool,
     /// The raw advertising payload, kept so that advertising can be restarted on disconnect
     adv_data: Vec<u8, MAX_ADV_DATA_SIZE>,
@@ -271,6 +272,11 @@ impl<'a, 'd> EspBtpGattPeripheral<'a, 'd> {
 
         self.subscribe_hooks();
 
+        let _stop = StopOnDrop {
+            driver: &self.driver,
+            context: self.context,
+        };
+
         self.driver
             .set_device_name(service_name)
             .map_err(to_matter_err_ble)?;
@@ -280,6 +286,14 @@ impl<'a, 'd> EspBtpGattPeripheral<'a, 'd> {
         self.driver.start().map_err(to_matter_err)?;
 
         info!("NimBLE host task started");
+
+        // When `run` is entered again for a later commissioning window, the host is in sync
+        // already, so no `Sync` event will request advertising.
+        if unsafe { ble_hs_synced() } != 0 {
+            self.context
+                .state
+                .lock(|state| state.borrow_mut().need_advertise = true);
+        }
 
         // Two concurrent pumps: incoming C1 writes, and outgoing C2 indications - which also drives
         // (re)advertising synchronously, so it needs no future of its own. This keeps the `run`
@@ -618,6 +632,40 @@ impl<'a, 'd> EspBtpGattPeripheral<'a, 'd> {
         info!("Advertising started");
 
         Ok(())
+    }
+}
+
+/// Stops advertising and drops the peer when `run` returns or its future is dropped. The
+/// `rs-matter` stack stops BLE that way when a commissioning window closes.
+///
+/// The host keeps running, because NimBLE can start it again only after a full re-init. It stays
+/// quiet, though: only the outgoing pump advertises, and that pump is gone with `run`.
+struct StopOnDrop<'r, 'd> {
+    driver: &'r BleDriver<'d, ServiceTable>,
+    context: &'r EspBtpGattContext,
+}
+
+impl Drop for StopOnDrop<'_, '_> {
+    fn drop(&mut self) {
+        // Fails with `BLE_HS_EALREADY` when not advertising
+        if self.driver.adv_stop().is_ok() {
+            info!("Advertising stopped");
+        }
+
+        let conn_handle = self.context.state.lock(|state| {
+            state
+                .borrow()
+                .connection
+                .as_ref()
+                .map(|conn| conn.conn_handle)
+        });
+
+        if let Some(conn_handle) = conn_handle {
+            // The `Disconnect` hook clears the connection once the link is down
+            unsafe {
+                ble_gap_terminate(conn_handle, ble_error_codes_BLE_ERR_REM_USER_CONN_TERM as _);
+            }
+        }
     }
 }
 
