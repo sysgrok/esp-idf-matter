@@ -25,9 +25,7 @@ opt-level = "s"
 
 [patch.crates-io]
 rs-matter = { git = "https://github.com/project-chip/rs-matter" }
-esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf" }
-esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf" }
-esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf" }
+mbedtls-rs-sys = { git = "https://github.com/esp-rs/mbedtls-rs" }
 
 [features]
 default = ["async-io-mini", "mbedtls"]
@@ -231,7 +229,7 @@ examples-heap-monitor = []
 log = { version = "0.4", default-features = false }
 enumset = { version = "1", default-features = false }
 embassy-sync = "0.8"
-esp-idf-svc = { version = "0.53", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
+esp-idf-svc = { version = "0.54", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
 rs-matter = { version = "0.4", default-features = false, features = ["std", "log"] }
 async-io = { version = "2.6", default-features = false }
 async-io-mini = { version = "0.4.1", features = ["stack-size-2048"], default-features = false, optional = true }
