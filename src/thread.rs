@@ -195,21 +195,45 @@ where
             }
         }
 
+        /// Add `result` unless a stronger answer of its network is in, or
+        /// `results` is full of stronger networks.
+        fn keep_strongest<const N: usize>(
+            results: &mut Vec<OwnedScanResult, N>,
+            result: OwnedScanResult,
+        ) {
+            if let Some(known) = results.iter_mut().find(|known| {
+                known.pan_id == result.pan_id && known.ext_pan_id == result.ext_pan_id
+            }) {
+                if result.rssi > known.rssi {
+                    *known = result;
+                }
+            } else if let Err(result) = results.push(result) {
+                if let Some(weakest) = results.iter_mut().min_by_key(|known| known.rssi) {
+                    if result.rssi > weakest.rssi {
+                        *weakest = result;
+                    }
+                }
+            }
+        }
+
         let scan_result = Arc::new(Mutex::<_, CriticalSectionRawMutex>::new(RefCell::new(
             Some(Vec::<_, 5>::new()),
         )));
 
+        // An MLE Discovery scan, as a beacon scan finds no network names. Every
+        // router of a network answers it, so only the strongest answer of each
+        // network is kept, and only the strongest networks when they do not fit
         {
             let scan_result = scan_result.clone();
 
             thread
-                .scan(move |info: Option<ActiveScanResult<'_>>| {
+                .discover(move |info: Option<ActiveScanResult<'_>>| {
                     if let Some(info) = info {
                         scan_result.lock(|results| {
                             let mut results = results.borrow_mut();
 
                             if let Some(results) = results.as_mut() {
-                                results.push(OwnedScanResult::from(info)).ok();
+                                keep_strongest(results, OwnedScanResult::from(info));
                             }
                         });
                     }
@@ -218,16 +242,19 @@ where
         }
 
         loop {
-            if !thread.is_scan_in_progress().map_err(to_net_error)? {
+            if !thread.is_discover_in_progress().map_err(to_net_error)? {
                 break;
             }
 
             Timer::after(POLL_SCAN_WAIT).await;
         }
 
-        let results = scan_result
+        let mut results = scan_result
             .lock(|results| results.borrow_mut().take())
             .unwrap();
+
+        // Strongest first
+        results.sort_unstable_by_key(|result| core::cmp::Reverse(result.rssi));
 
         for result in results {
             if network

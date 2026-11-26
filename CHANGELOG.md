@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix: the Thread network scan finds the network names, as it uses an MLE Discovery scan rather than a beacon scan; it keeps the strongest answer of each network and reports the strongest networks first. Needs `esp-idf-svc` with `EspThread::discover`
 - Update to `esp-idf-svc` 0.54
 - Fix: the BLE peripheral stops advertising and disconnects when the commissioning window closes; before, a commissioned device kept advertising over BLE as commissionable
 - Breaking: no stack aliases; a stack is a plain `MatterStack` over `EspThreadNetwork`, `EspWifiNetwork` or `EspAnyNetwork` (a networks store plus the BLE GATT context), as in `MatterStack<'a, B, EspThreadNetwork, E>`, or over `EthNetwork` for Ethernet. Each takes a store of its network type. `EspMatterThread` and `EspMatterWifi` take a stack whose network is `EspThreadCapable` or `EspWifiCapable`: their own network type, or `EspAnyNetwork`. `EspWirelessMatterStack`, `EspWirelessBle`, `EspThreadMatterStack`, `EspWifiMatterStack`, `EspEthMatterStack`, `EspEth` and `EspGatt` are gone
