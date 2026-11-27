@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Update to `rs-matter` 0.5
 - Fix: the Thread network scan finds the network names, as it uses an MLE Discovery scan rather than a beacon scan; it keeps the strongest answer of each network and reports the strongest networks first. Needs `esp-idf-svc` with `EspThread::discover`
 - Update to `esp-idf-svc` 0.54
 - Fix: the BLE peripheral stops advertising and disconnects when the commissioning window closes; before, a commissioned device kept advertising over BLE as commissionable

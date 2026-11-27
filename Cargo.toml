@@ -23,10 +23,6 @@ opt-level = "s"
 debug = true
 opt-level = "s"
 
-[patch.crates-io]
-rs-matter = { git = "https://github.com/project-chip/rs-matter" }
-mbedtls-rs-sys = { git = "https://github.com/esp-rs/mbedtls-rs" }
-
 [features]
 default = ["async-io-mini", "mbedtls"]
 
@@ -230,7 +226,7 @@ log = { version = "0.4", default-features = false }
 enumset = { version = "1", default-features = false }
 embassy-sync = "0.8"
 esp-idf-svc = { version = "0.54.2", default-features = false, features = ["std", "embassy-time-driver", "experimental"] }
-rs-matter = { version = "0.4", default-features = false, features = ["std", "log"] }
+rs-matter = { version = "0.5", default-features = false, features = ["std", "log"] }
 async-io = { version = "2.6", default-features = false }
 async-io-mini = { version = "0.4.1", features = ["stack-size-2048"], default-features = false, optional = true }
 
